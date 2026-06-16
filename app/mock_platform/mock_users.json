@@ -1,0 +1,32 @@
+[
+  {
+    "id": "u_1001",
+    "name": "Zhang San",
+    "role": "user",
+    "tenant_id": "t_001",
+    "status": "ACTIVE",
+    "phone": "13800001234"
+  },
+  {
+    "id": "u_1002",
+    "name": "Li Si",
+    "role": "user",
+    "tenant_id": "t_001",
+    "status": "ACTIVE",
+    "phone": "13900005678"
+  },
+  {
+    "id": "staff_001",
+    "name": "Staff One",
+    "role": "staff",
+    "tenant_id": "t_001",
+    "status": "ACTIVE"
+  },
+  {
+    "id": "supervisor_001",
+    "name": "Supervisor One",
+    "role": "supervisor",
+    "tenant_id": "t_001",
+    "status": "ACTIVE"
+  }
+]

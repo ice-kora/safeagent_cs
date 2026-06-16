@@ -1,0 +1,54 @@
+[
+  {
+    "id": "O10086",
+    "user_id": "u_1001",
+    "tenant_id": "t_001",
+    "status": "PAID",
+    "amount": 199.0,
+    "address": "Henan Zhengzhou Jinshui Road 100",
+    "address_masked": "Henan Zhengzhou ***",
+    "phone": "13800001234",
+    "payment_info": "card_123456",
+    "delivery_status": "PENDING_SHIPMENT",
+    "refund_status": "NONE"
+  },
+  {
+    "id": "O10087",
+    "user_id": "u_1002",
+    "tenant_id": "t_001",
+    "status": "SHIPPED",
+    "amount": 299.0,
+    "address": "Shanghai Pudong Road 200",
+    "address_masked": "Shanghai Pudong ***",
+    "phone": "13900005678",
+    "payment_info": "card_567890",
+    "delivery_status": "SHIPPED",
+    "refund_status": "NONE"
+  },
+  {
+    "id": "O10088",
+    "user_id": "u_1001",
+    "tenant_id": "t_001",
+    "status": "COMPLETED",
+    "amount": 99.0,
+    "address": "Henan Zhengzhou Erqi Road 300",
+    "address_masked": "Henan Zhengzhou ***",
+    "phone": "13800001234",
+    "payment_info": "card_123456",
+    "delivery_status": "DELIVERED",
+    "refund_status": "NONE"
+  },
+  {
+    "id": "O10089",
+    "user_id": "u_1001",
+    "tenant_id": "t_001",
+    "status": "REFUNDED",
+    "amount": 59.0,
+    "address": "Henan Zhengzhou Zhongyuan Road 400",
+    "address_masked": "Henan Zhengzhou ***",
+    "phone": "13800001234",
+    "payment_info": "card_123456",
+    "delivery_status": "CANCELLED",
+    "refund_status": "REFUNDED"
+  }
+]
