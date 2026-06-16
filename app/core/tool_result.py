@@ -25,8 +25,8 @@ class ToolResult:
     """业务工具返回结果的统一结构。
 
     ToolResult 是 ToolGateway 之前的工具层契约。即使当前阶段还没有完整
-    ToolGateway，Mock Tool 也必须先统一返回结构，避免后续编排层直接处理
-    任意 dict。data 只放结构化且已脱敏的数据，summary 则提供给普通回复生成
+    ToolGateway,Mock Tool 也必须先统一返回结构，避免后续编排层直接处理
+    任意 dict。data 只放结构化且已脱敏的数据,summary 则提供给普通回复生成
     或 P0.5 的 LLMResponseGenerator 使用。
     """
 

@@ -152,7 +152,7 @@ class TraceService:
                        error_type, created_at
                 FROM agent_traces
                 WHERE run_id = ?
-                ORDER BY created_at ASC, trace_node_id ASC
+                ORDER BY created_at ASC, rowid ASC
                 """,
                 (run_id,),
             ).fetchall()

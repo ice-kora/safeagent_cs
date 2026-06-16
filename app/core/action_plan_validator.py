@@ -49,6 +49,8 @@ class ActionPlanValidator:
         "ticket",
         "security",
     }
+    # TODO: 当前 Validator 和 ToolRegistry 各自维护工具名。
+    # 后续可抽 app/core/tool_catalog.py 统一工具目录，避免工具名重复维护。
     ALLOWED_TOOLS = {
         "knowledge_tool.query_policy",
         "order_tool.query_order",

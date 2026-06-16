@@ -1,13 +1,13 @@
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from app.core.tool_result import ToolError, ToolResult
 from app.services.logging_service import LoggingService
 from app.storage.db import get_connection, init_db
-from app.tools import knowledge_tool, order_tool, ticket_tool
+from app.tools.registry import ToolRegistry
 
 
 class ToolGateway:
@@ -19,13 +19,6 @@ class ToolGateway:
     悄悄绕过策略层。
     """
 
-    ALLOWED_TOOLS = {
-        "knowledge_tool.query_policy",
-        "order_tool.query_order",
-        "order_tool.change_address",
-        "ticket_tool.create_ticket",
-    }
-
     def __init__(
         self,
         db_path: str | Path | None = None,
@@ -33,6 +26,7 @@ class ToolGateway:
     ) -> None:
         self.db_path = Path(db_path) if db_path else None
         self.mock_dir = Path(mock_dir) if mock_dir else None
+        self.registry = ToolRegistry(db_path=self.db_path, mock_dir=self.mock_dir)
         init_db(self.db_path)
 
     def call_tool(
@@ -51,9 +45,14 @@ class ToolGateway:
         args = tool_args or {}
         started_at = time.perf_counter()
         result = self._reject_unknown_tool(tool_name)
-        if tool_name in self.ALLOWED_TOOLS:
+        if self.registry.has_tool(tool_name):
             try:
-                result = self._route_tool(tool_name, args)
+                # TODO(Phase 4): /api/chat 或 Workflow 接入时，不能只传
+                # ActionPlan.tool_args。主链路必须合并系统上下文：
+                # user_id/customer_user_id、action、target_type、target_id、
+                # risk_level、source_run_id，确保工单幂等和审计链路都有稳定输入。
+                handler = self.registry.get_handler(tool_name)
+                result = handler(args)
             except Exception:
                 # 这里不记录异常栈，避免内部细节进入日志；后续 FailureHandler
                 # 会根据 error_type 判断是否重试或降级。
@@ -83,15 +82,6 @@ class ToolGateway:
         )
         return result
 
-    def _route_tool(self, tool_name: str, tool_args: dict[str, Any]) -> ToolResult:
-        routes: dict[str, Callable[[dict[str, Any]], ToolResult]] = {
-            "knowledge_tool.query_policy": self._call_query_policy,
-            "order_tool.query_order": self._call_query_order,
-            "order_tool.change_address": self._call_change_address,
-            "ticket_tool.create_ticket": self._call_create_ticket,
-        }
-        return routes[tool_name](tool_args)
-
     @staticmethod
     def _reject_unknown_tool(tool_name: str) -> ToolResult:
         return ToolResult(
@@ -106,44 +96,6 @@ class ToolGateway:
                 message="工具不在 ToolGateway 白名单中",
                 retryable=False,
             ),
-        )
-
-    @staticmethod
-    def _call_query_policy(tool_args: dict[str, Any]) -> ToolResult:
-        return knowledge_tool.query_policy(query=str(tool_args.get("query", "")))
-
-    def _call_query_order(self, tool_args: dict[str, Any]) -> ToolResult:
-        return order_tool.query_order(
-            order_id=str(tool_args.get("order_id", "")),
-            mock_dir=self.mock_dir,
-            db_path=self.db_path,
-        )
-
-    def _call_change_address(self, tool_args: dict[str, Any]) -> ToolResult:
-        return order_tool.change_address(
-            order_id=str(tool_args.get("order_id", "")),
-            new_address=tool_args.get("new_address"),
-            mock_dir=self.mock_dir,
-            db_path=self.db_path,
-        )
-
-    def _call_create_ticket(self, tool_args: dict[str, Any]) -> ToolResult:
-        # TODO(Phase 4): /api/chat 或 Workflow 接入时，不能只传
-        # ActionPlan.tool_args。主链路必须合并系统上下文：
-        # user_id/customer_user_id、action、target_type、target_id、risk_level、
-        # source_run_id，确保工单幂等和审计链路都有稳定输入。
-        return ticket_tool.create_ticket(
-            user_id=str(tool_args.get("user_id", "")),
-            action=str(tool_args.get("action", "")),
-            target_type=str(tool_args.get("target_type", "")),
-            target_id=tool_args.get("target_id"),
-            ticket_type=str(tool_args.get("ticket_type", "general")),
-            risk_level=str(tool_args.get("risk_level", "L4")),
-            description=tool_args.get("description"),
-            db_path=self.db_path,
-            source_run_id=tool_args.get("source_run_id"),
-            parent_run_id=tool_args.get("parent_run_id"),
-            pending_action_id=tool_args.get("pending_action_id"),
         )
 
     def _write_tool_call_log(
