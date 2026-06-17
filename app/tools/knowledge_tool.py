@@ -1,53 +1,91 @@
-from app.core.tool_result import ToolResult
-
-
-KNOWLEDGE_BASE = {
-    "七天无理由": {
-        "answer": "支持符合条件的七天无理由退货，商品需保持完好且不影响二次销售。",
-        "sources": ["static_policy:return_7_days"],
-    },
-    "退款政策": {
-        "answer": "退款申请需要根据订单状态和售后规则审核，P0 阶段不会自动执行真实退款。",
-        "sources": ["static_policy:refund_policy"],
-    },
-    "发票": {
-        "answer": "如需发票，可在订单完成后提交开票信息，由人工或后续系统流程处理。",
-        "sources": ["static_policy:invoice"],
-    },
-    "售后规则": {
-        "answer": "售后请求会根据订单状态、商品状态和风险等级进入自动回复、二次确认或人工处理。",
-        "sources": ["static_policy:after_sales"],
-    },
-}
+from app.core.tool_result import ToolError, ToolResult
+from app.rag.chunker import PolicyChunker
+from app.rag.document_store import PolicyDocumentStore
+from app.rag.reranker import rerank_chunks
+from app.rag.retriever import KeywordRetriever
+from app.rag.safety import sanitize_rag_payload
 
 
 def query_policy(query: str) -> ToolResult:
-    """查询 P0 静态知识库。
+    """查询本地 RAG 政策知识库。
 
-    P0 暂不做真正 RAG，这里只用确定性关键词匹配，保证 Demo 和测试稳定。
-    返回内容必须是公开政策摘要，不包含任何用户或订单敏感信息。
+    RAG 只作为 knowledge_tool.query_policy 的内部实现。它不判断权限、
+    不调用业务工具，也不生成真实业务动作；主链路仍必须经过 ToolGateway。
     """
-    matched_entry = None
-    for keyword, entry in KNOWLEDGE_BASE.items():
-        if keyword in query:
-            matched_entry = entry
-            break
+    try:
+        documents = PolicyDocumentStore().list_documents()
+        chunks = PolicyChunker().split_documents(documents)
+        retrieved = KeywordRetriever(chunks).retrieve(query=query, top_k=5)
+        reranked = rerank_chunks(retrieved, top_k=3)
+    except Exception:
+        return ToolResult(
+            success=False,
+            tool_name="knowledge_tool.query_policy",
+            data={},
+            summary="政策知识库查询失败。",
+            error_type="RAG_QUERY_FAILED",
+            safe_for_llm=True,
+            error=ToolError(
+                failure_type="RAG_QUERY_FAILED",
+                message="政策知识库查询失败",
+                retryable=False,
+            ),
+        )
 
-    if matched_entry is None:
-        matched_entry = {
-            "answer": "暂未匹配到具体政策条目，建议转人工或补充更明确的问题。",
-            "sources": ["static_policy:default"],
+    safe_query = sanitize_rag_payload(query)
+    if not reranked:
+        answer = "暂未找到相关政策，建议补充更明确的问题或转人工处理。"
+        data = {
+            "query": safe_query,
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "matched_chunks": [],
         }
+        return ToolResult(
+            success=False,
+            tool_name="knowledge_tool.query_policy",
+            data=sanitize_rag_payload(data),
+            summary=answer,
+            error_type="POLICY_NOT_FOUND",
+            safe_for_llm=True,
+            error=ToolError(
+                failure_type="POLICY_NOT_FOUND",
+                message="未找到相关政策",
+                retryable=False,
+            ),
+        )
 
-    answer = matched_entry["answer"]
-    sources = matched_entry["sources"]
+    answer = _build_answer(reranked)
+    citations = [item.citation_dict() for item in reranked]
+    matched_chunks = [item.matched_chunk_dict() for item in reranked]
+    data = sanitize_rag_payload(
+        {
+            "query": safe_query,
+            "answer": answer,
+            "citations": citations,
+            # sources 保留旧字段，兼容已有 Demo 和测试。
+            "sources": [citation["source_id"] for citation in citations],
+            "matched_chunks": matched_chunks,
+        }
+    )
     return ToolResult(
         success=True,
         tool_name="knowledge_tool.query_policy",
-        data={
-            "answer": answer,
-            "sources": sources,
-        },
-        summary=answer,
+        data=data,
+        summary=sanitize_rag_payload(answer),
         safe_for_llm=True,
     )
+
+
+def _build_answer(scored_chunks) -> str:
+    """基于命中切片生成规则摘要，不调用 LLM。"""
+    top_chunk = scored_chunks[0].chunk
+    supporting_titles = []
+    for item in scored_chunks:
+        if item.chunk.title not in supporting_titles:
+            supporting_titles.append(item.chunk.title)
+    evidence = top_chunk.text
+    if len(evidence) > 180:
+        evidence = evidence[:180].rstrip() + "..."
+    return f"根据《{top_chunk.title}》：{evidence} 参考来源：{'、'.join(supporting_titles)}。"
