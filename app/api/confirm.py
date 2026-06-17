@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core.config import WORKFLOW_MODE_WORKFLOW, get_settings
 from app.core.constants import PolicyDecisionType
 from app.core.ids import generate_request_id
 from app.services.pending_action_service import (
@@ -13,6 +14,10 @@ from app.services.pending_action_service import (
 from app.services.policy_service import PolicyService
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
+from app.workflows.confirm_adapter import (
+    build_confirm_workflow_services,
+    handle_workflow_confirm,
+)
 
 
 router = APIRouter()
@@ -56,6 +61,18 @@ def confirm_pending_action(
     source_run_id。确认执行前必须重新经过 PolicyService 复核，工具调用也必须
     经过 ToolGateway。
     """
+    if get_settings().workflow_mode == WORKFLOW_MODE_WORKFLOW:
+        # Workflow 模式只做顶层分流，不复用 /api/chat 的 NLU/Planner 节点。
+        return handle_workflow_confirm(
+            request=request,
+            services=build_confirm_workflow_services(
+                pending_action_service=pending_action_service,
+                trace_service=trace_service,
+                policy_service=policy_service,
+                tool_gateway=tool_gateway,
+            ),
+        )
+
     # 先校验 pending_action 是否存在、是否属于当前用户、是否仍处于 PENDING。
     pending_action = _validate_pending_action(
         pending_action_service=pending_action_service,

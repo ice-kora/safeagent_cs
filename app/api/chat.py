@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core.action_plan_validator import ActionPlanValidator
+from app.core.config import WORKFLOW_MODE_WORKFLOW, get_settings
 from app.core.constants import PolicyDecisionType
 from app.core.failure_result import FailureHandlingStatus
 from app.core.ids import generate_request_id
@@ -14,6 +15,8 @@ from app.services.planner_service import RuleBasedActionPlanner
 from app.services.policy_service import PolicyService
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
+from app.workflows.chat_adapter import handle_workflow_chat
+from app.workflows.service_adapters import SafeAgentWorkflowServices
 
 
 router = APIRouter()
@@ -75,6 +78,23 @@ def chat(
     ToolGateway/PendingAction。它不使用 LangGraph、不调用 LLM、不做真实 RAG，
     也不直接调用任何 Mock Tool。
     """
+    if get_settings().workflow_mode == WORKFLOW_MODE_WORKFLOW:
+        # Workflow 模式只做顶层分流，节点内部继续复用同一批 service。
+        # 默认 manual 不变；后续稳定后再考虑灰度扩大。
+        return handle_workflow_chat(
+            request=request,
+            services=SafeAgentWorkflowServices(
+                trace_service=trace_service,
+                intent_classifier=intent_classifier,
+                action_planner=action_planner,
+                action_plan_validator=action_plan_validator,
+                policy_service=policy_service,
+                tool_gateway=tool_gateway,
+                failure_handler=failure_handler,
+                pending_action_service=pending_action_service,
+            ),
+        )
+
     # 每次用户请求都创建独立 run，后续所有 Trace、工具日志和失败日志都挂到该 run。
     request_id = generate_request_id()
     run_id = trace_service.start_run(
