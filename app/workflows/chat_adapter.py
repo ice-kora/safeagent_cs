@@ -1,5 +1,7 @@
 from typing import Any
 
+from app.core.config import WORKFLOW_ENGINE_LANGGRAPH, get_settings
+from app.workflows.langgraph_chat_workflow import run_langgraph_chat_workflow
 from app.workflows.safeagent_state import SafeAgentWorkflowState
 from app.workflows.safeagent_workflow import build_safeagent_workflow
 from app.workflows.service_adapters import SafeAgentWorkflowServices
@@ -14,12 +16,21 @@ def handle_workflow_chat(
     Adapter 只做请求/响应格式转换，不重新实现 PolicyService、ToolGateway、
     PendingActionService 或 FailureHandler 的业务规则。
     """
-    workflow = build_safeagent_workflow(services)
-    state = workflow.run(
-        session_id=request.session_id,
-        user_id=request.user_id,
-        message=request.message,
-    )
+    settings = get_settings()
+    if settings.workflow_engine == WORKFLOW_ENGINE_LANGGRAPH:
+        state = run_langgraph_chat_workflow(
+            session_id=request.session_id,
+            user_id=request.user_id,
+            message=request.message,
+            services=services,
+        )
+    else:
+        workflow = build_safeagent_workflow(services)
+        state = workflow.run(
+            session_id=request.session_id,
+            user_id=request.user_id,
+            message=request.message,
+        )
     return workflow_state_to_chat_response(state)
 
 
@@ -53,4 +64,3 @@ def _validation_to_dict(state: SafeAgentWorkflowState) -> dict[str, str] | None:
         "status": state.validation_result.status.value,
         "reason": state.validation_result.reason,
     }
-
