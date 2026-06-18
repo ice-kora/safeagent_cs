@@ -1,7 +1,7 @@
 import json
 
 from app.core.llm_models import GuardStatus, SCHEMA_VERSION
-from app.services.llm_output_guard import LLMOutputGuard
+from app.llm.output_guard import LLMOutputGuard
 
 
 def _json(payload: dict[str, object]) -> str:

@@ -1,6 +1,11 @@
 import socket
+from pathlib import Path
 
-import demo_v03_safeagent
+from demo import demo_v03_safeagent
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+demo_v03_safeagent.MOCK_DIR = PROJECT_ROOT / "app" / "mock_platform"
 
 
 def test_demo_v03_module_can_be_imported() -> None:

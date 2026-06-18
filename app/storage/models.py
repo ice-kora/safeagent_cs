@@ -1,6 +1,42 @@
 # SQLite 不支持 MySQL 风格的字段 COMMENT。
 # 这里用 SQL 注释维护字段中文说明，方便学习、答辩和后续审计设计对齐。
 SCHEMA_SQL = """
+-- users：客户/买家最小身份上下文表
+CREATE TABLE IF NOT EXISTS users (
+    -- id：客户/买家 ID，P0 语义等同 customer_user_id
+    id TEXT PRIMARY KEY,
+    -- role：角色预留字段，P0 仅作为后续客服权限扩展准备
+    role TEXT,
+    -- tenant_id：当前客服入口所属商家/租户 ID
+    tenant_id TEXT,
+    -- status：用户状态，例如 ACTIVE
+    status TEXT,
+    -- created_at：创建时间
+    created_at TEXT,
+    -- updated_at：最近更新时间
+    updated_at TEXT
+);
+
+-- orders：订单权限预检最小上下文表
+CREATE TABLE IF NOT EXISTS orders (
+    -- id：订单 ID
+    id TEXT PRIMARY KEY,
+    -- user_id：订单所属客户/买家 ID
+    user_id TEXT NOT NULL,
+    -- tenant_id：订单所属商家/租户 ID
+    tenant_id TEXT NOT NULL,
+    -- status：订单状态
+    status TEXT,
+    -- delivery_status：配送状态
+    delivery_status TEXT,
+    -- refund_status：退款状态
+    refund_status TEXT,
+    -- created_at：创建时间
+    created_at TEXT,
+    -- updated_at：最近更新时间
+    updated_at TEXT
+);
+
 -- agent_runs：一次 Agent 执行链路记录表
 CREATE TABLE IF NOT EXISTS agent_runs (
     -- run_id：一次 Agent 执行链路 ID
@@ -82,6 +118,12 @@ CREATE TABLE IF NOT EXISTS policy_logs (
 CREATE TABLE IF NOT EXISTS tool_call_logs (
     -- id：日志 ID
     id TEXT PRIMARY KEY,
+    -- tool_call_id：一次物理工具调用 ID，每次真正进入 ToolGateway 都不同
+    tool_call_id TEXT,
+    -- idempotency_key：逻辑业务动作幂等键，用于后续 retry/resume/duplicate prevention
+    idempotency_key TEXT,
+    -- action_fingerprint：ActionPlan / 工具上下文的稳定 hash，不保存敏感明文
+    action_fingerprint TEXT,
     -- run_id：所属 Agent 执行链路
     run_id TEXT NOT NULL,
     -- session_id：所属用户会话
@@ -102,6 +144,36 @@ CREATE TABLE IF NOT EXISTS tool_call_logs (
     latency_ms INTEGER,
     -- created_at：记录创建时间
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- pending_action_events：pending_action 状态流转事件事实表
+CREATE TABLE IF NOT EXISTS pending_action_events (
+    -- event_id：事件 ID
+    event_id TEXT PRIMARY KEY,
+    -- pending_action_id：关联待确认动作 ID
+    pending_action_id TEXT NOT NULL,
+    -- run_id：触发该事件的 run，可为空
+    run_id TEXT,
+    -- parent_run_id：跨请求父级 run，可为空
+    parent_run_id TEXT,
+    -- session_id：所属用户会话
+    session_id TEXT,
+    -- user_id：所属用户
+    user_id TEXT,
+    -- tenant_id：租户 ID，可为空
+    tenant_id TEXT,
+    -- event_type：CREATED / CONFIRMED / CANCELLED / EXPIRED / EXECUTED 等
+    event_type TEXT NOT NULL,
+    -- old_status：状态变化前
+    old_status TEXT,
+    -- new_status：状态变化后
+    new_status TEXT,
+    -- reason：事件原因，必须脱敏
+    reason TEXT,
+    -- metadata_json：事件元数据，必须脱敏且 JSON-safe
+    metadata_json TEXT,
+    -- created_at：记录创建时间
+    created_at TEXT NOT NULL
 );
 
 -- failure_logs：失败处理日志表
@@ -207,6 +279,12 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id
     ON agent_runs(session_id);
 
+CREATE INDEX IF NOT EXISTS idx_users_tenant_id
+    ON users(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_user_tenant
+    ON orders(user_id, tenant_id);
+
 CREATE INDEX IF NOT EXISTS idx_agent_traces_run_id
     ON agent_traces(run_id);
 
@@ -224,6 +302,12 @@ CREATE INDEX IF NOT EXISTS idx_security_logs_run_id
 
 CREATE INDEX IF NOT EXISTS idx_pending_actions_user_status
     ON pending_actions(user_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_pending_action_events_pending_action_id
+    ON pending_action_events(pending_action_id);
+
+CREATE INDEX IF NOT EXISTS idx_pending_action_events_run_id
+    ON pending_action_events(run_id);
 
 CREATE INDEX IF NOT EXISTS idx_tickets_user_status
     ON tickets(user_id, status);

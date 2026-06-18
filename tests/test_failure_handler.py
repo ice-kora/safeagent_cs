@@ -151,11 +151,11 @@ def test_non_retryable_failure_returns_failed_and_writes_log(
         success=False,
         tool_name="unknown_tool.export_all_users",
         data={},
-        summary="工具不在白名单中，已拒绝执行。",
-        error_type="TOOL_NOT_ALLOWED",
+        summary="工具未进入显式安全白名单，已拒绝执行。",
+        error_type="TOOL_NOT_IN_ALLOWLIST",
         error=ToolError(
-            failure_type="TOOL_NOT_ALLOWED",
-            message="工具不在白名单中",
+            failure_type="TOOL_NOT_IN_ALLOWLIST",
+            message="工具未进入显式安全白名单",
             retryable=False,
         ),
     )
@@ -171,7 +171,7 @@ def test_non_retryable_failure_returns_failed_and_writes_log(
     assert result.retryable is False
     assert result.next_action == FailureNextAction.FAILED
     assert len(logs) == 1
-    assert logs[0]["failure_type"] == "TOOL_NOT_ALLOWED"
+    assert logs[0]["failure_type"] == "TOOL_NOT_IN_ALLOWLIST"
     assert logs[0]["retryable"] == 0
     assert logs[0]["fallback_action"] == "FAILED"
     assert logs[0]["final_status"] == "FAILED"
@@ -249,11 +249,11 @@ def test_handle_with_retry_non_retryable_failure_does_not_retry(
         success=False,
         tool_name="unknown_tool.export_all_users",
         data={},
-        summary="工具不在白名单中。",
-        error_type="TOOL_NOT_ALLOWED",
+        summary="工具未进入显式安全白名单。",
+        error_type="TOOL_NOT_IN_ALLOWLIST",
         error=ToolError(
-            failure_type="TOOL_NOT_ALLOWED",
-            message="工具不在白名单中",
+            failure_type="TOOL_NOT_IN_ALLOWLIST",
+            message="工具未进入显式安全白名单",
             retryable=False,
         ),
     )

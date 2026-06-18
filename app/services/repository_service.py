@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.storage.database_config import (
+    DB_BACKEND_POSTGRES,
+    DB_BACKEND_SQLITE,
+    get_database_settings,
+)
 from app.storage.db import DEFAULT_DB_PATH, get_connection, init_db
+from app.storage.postgres import PostgresBackend
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,17 +34,38 @@ class RepositoryService:
         self,
         mock_dir: str | Path | None = None,
         db_path: str | Path | None = None,
+        db_backend: str | None = None,
+        database_url: str | None = None,
     ) -> None:
         self.mock_dir = Path(mock_dir) if mock_dir else DEFAULT_MOCK_DIR
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        settings = get_database_settings()
+        selected_backend = (db_backend or settings.backend).strip().lower()
+        if selected_backend not in {DB_BACKEND_SQLITE, DB_BACKEND_POSTGRES}:
+            selected_backend = DB_BACKEND_SQLITE
+        self.db_backend = selected_backend
+        self.database_url = database_url or settings.database_url
+        self.postgres_backend: PostgresBackend | None = None
+
+        # v0.6-DB-R1: 始终初始化 runtime SQLite store（tickets 等运行时表），
+        # 即使 platform data（users / orders）走 PostgreSQL 也不能跳过。
         init_db(self.db_path)
+
+        if self.db_backend == DB_BACKEND_POSTGRES:
+            self.postgres_backend = PostgresBackend(self.database_url)
+            self.postgres_backend.init_schema()
 
     def get_user_context(self, user_id: str) -> dict[str, Any] | None:
         """读取客户最小上下文，只返回权限判断需要的字段。
 
         返回的 role 字段暂时不参与 P0 裁决，但保留给后续客服角色权限扩展。
         tenant_id 在 P0 中表示当前客服入口所属商家，即 session_tenant_id。
+        v0.4B 要求字段稳定为 user_id / tenant_id / role / status。
         """
+        user = self._get_user_context_from_db(user_id)
+        if user:
+            return user
+
         user = self._find_by_id("mock_users.json", user_id)
         if not user:
             return None
@@ -57,6 +84,10 @@ class RepositoryService:
         返回的 user_id 表示订单所属客户 customer_user_id；
         返回的 tenant_id 表示订单所属商家 merchant_tenant_id。
         """
+        order = self._get_order_auth_context_from_db(order_id)
+        if order:
+            return order
+
         order = self._find_by_id("mock_orders.json", order_id)
         if not order:
             return None
@@ -85,6 +116,58 @@ class RepositoryService:
         with get_connection(self.db_path) as connection:
             row = connection.execute(query, (idempotency_key,)).fetchone()
         return dict(row) if row else None
+
+    def _get_user_context_from_db(self, user_id: str) -> dict[str, Any] | None:
+        if self.db_backend == DB_BACKEND_POSTGRES:
+            if not self.postgres_backend:
+                return None
+            return self.postgres_backend.get_user_context(user_id)
+
+        with get_connection(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT id, role, tenant_id, status
+                FROM users
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "user_id": row["id"],
+            "role": row["role"],
+            "tenant_id": row["tenant_id"],
+            "status": row["status"],
+        }
+
+    def _get_order_auth_context_from_db(self, order_id: str) -> dict[str, Any] | None:
+        if self.db_backend == DB_BACKEND_POSTGRES:
+            if not self.postgres_backend:
+                return None
+            return self.postgres_backend.get_order_auth_context(order_id)
+
+        with get_connection(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT id, user_id, tenant_id, status, delivery_status, refund_status
+                FROM orders
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "order_id": row["id"],
+            "user_id": row["user_id"],
+            "tenant_id": row["tenant_id"],
+            "order_status": row["status"],
+            "delivery_status": row["delivery_status"],
+            "refund_status": row["refund_status"],
+        }
 
     def _find_by_id(self, file_name: str, item_id: str) -> dict[str, Any] | None:
         for item in self._load_json_list(file_name):

@@ -81,10 +81,10 @@ def test_gateway_rejects_unknown_tool_and_logs_failure(tmp_path: Path) -> None:
     logs = _read_tool_logs(db_path)
 
     assert result.success is False
-    assert result.error_type == "TOOL_NOT_ALLOWED"
+    assert result.error_type == "TOOL_NOT_IN_ALLOWLIST"
     assert len(logs) == 1
     assert logs[0]["status"] == "FAILED"
-    assert logs[0]["failure_type"] == "TOOL_NOT_ALLOWED"
+    assert logs[0]["failure_type"] == "TOOL_NOT_IN_ALLOWLIST"
 
 
 def test_gateway_writes_sanitized_tool_args_and_result_summary(

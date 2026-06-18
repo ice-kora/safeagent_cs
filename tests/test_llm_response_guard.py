@@ -1,5 +1,5 @@
 from app.core.llm_models import GuardStatus, LLMResponseDraft
-from app.services.llm_response_guard import LLMResponseGuard
+from app.llm.response_guard import LLMResponseGuard
 
 
 def _draft(

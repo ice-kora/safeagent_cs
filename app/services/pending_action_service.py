@@ -5,6 +5,7 @@ from typing import Any
 
 from app.core.action_plan import ActionPlan
 from app.core.ids import generate_pending_action_id
+from app.services.pending_action_event_service import PendingActionEventService
 from app.storage.db import get_connection, init_db
 
 
@@ -33,6 +34,7 @@ class PendingActionService:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else None
         init_db(self.db_path)
+        self.event_service = PendingActionEventService(db_path=self.db_path)
 
     def create_pending_action(
         self,
@@ -81,6 +83,22 @@ class PendingActionService:
                 ),
             )
             connection.commit()
+        self.event_service.record_event(
+            pending_action_id=pending_action_id,
+            run_id=source_run_id,
+            session_id=session_id,
+            user_id=user_id,
+            event_type=PendingActionEventService.EVENT_CREATED,
+            old_status=None,
+            new_status=self.STATUS_PENDING,
+            reason="pending_action created",
+            metadata={
+                "risk_level": risk_level,
+                "action": action_plan.action,
+                "target_type": action_plan.target_type,
+                "target_id": action_plan.target_id,
+            },
+        )
         return pending_action_id
 
     def get_pending_action(self, pending_action_id: str) -> dict[str, Any] | None:
@@ -138,20 +156,108 @@ class PendingActionService:
             "action_plan": self._deserialize_action_plan(record["action_plan_json"]),
         }
 
-    def mark_confirmed(self, pending_action_id: str) -> None:
-        self._update_status(pending_action_id, self.STATUS_CONFIRMED)
+    def mark_confirmed(
+        self,
+        pending_action_id: str,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        tenant_id: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._update_status(
+            pending_action_id,
+            self.STATUS_CONFIRMED,
+            event_type=PendingActionEventService.EVENT_CONFIRMED,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tenant_id=tenant_id,
+            reason=reason or "pending_action confirmed",
+            metadata=metadata,
+        )
 
-    def mark_executed(self, pending_action_id: str) -> None:
-        self._update_status(pending_action_id, self.STATUS_EXECUTED)
+    def mark_executed(
+        self,
+        pending_action_id: str,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        tenant_id: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._update_status(
+            pending_action_id,
+            self.STATUS_EXECUTED,
+            event_type=PendingActionEventService.EVENT_EXECUTED,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tenant_id=tenant_id,
+            reason=reason or "pending_action executed",
+            metadata=metadata,
+        )
 
-    def mark_expired(self, pending_action_id: str) -> None:
-        self._update_status(pending_action_id, self.STATUS_EXPIRED)
+    def mark_expired(
+        self,
+        pending_action_id: str,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        tenant_id: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._update_status(
+            pending_action_id,
+            self.STATUS_EXPIRED,
+            event_type=PendingActionEventService.EVENT_EXPIRED,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tenant_id=tenant_id,
+            reason=reason or "pending_action expired",
+            metadata=metadata,
+        )
 
-    def mark_cancelled(self, pending_action_id: str) -> None:
-        self._update_status(pending_action_id, self.STATUS_CANCELLED)
+    def mark_cancelled(
+        self,
+        pending_action_id: str,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        tenant_id: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._update_status(
+            pending_action_id,
+            self.STATUS_CANCELLED,
+            event_type=PendingActionEventService.EVENT_CANCELLED,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tenant_id=tenant_id,
+            reason=reason or "pending_action cancelled",
+            metadata=metadata,
+        )
 
-    def _update_status(self, pending_action_id: str, status: str) -> None:
+    def _update_status(
+        self,
+        pending_action_id: str,
+        status: str,
+        event_type: str,
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
+        tenant_id: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         with get_connection(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT status, session_id, user_id, source_run_id
+                FROM pending_actions
+                WHERE pending_action_id = ?
+                """,
+                (pending_action_id,),
+            ).fetchone()
+            if not row:
+                raise PendingActionError(f"pending_action 不存在: {pending_action_id}")
             cursor = connection.execute(
                 """
                 UPDATE pending_actions
@@ -163,6 +269,23 @@ class PendingActionService:
             connection.commit()
         if cursor.rowcount == 0:
             raise PendingActionError(f"pending_action 不存在: {pending_action_id}")
+        old_status = row["status"]
+        self.event_service.record_event(
+            pending_action_id=pending_action_id,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            session_id=row["session_id"],
+            user_id=row["user_id"],
+            tenant_id=tenant_id,
+            event_type=event_type,
+            old_status=old_status,
+            new_status=status,
+            reason=reason,
+            metadata={
+                "source_run_id": row["source_run_id"],
+                **(metadata or {}),
+            },
+        )
 
     @staticmethod
     def _deserialize_action_plan(action_plan_json: str) -> ActionPlan:
