@@ -14,7 +14,11 @@ from app.services.pending_action_service import (
     PendingActionPermissionError,
     PendingActionService,
 )
-from app.services.policy_service import PolicyService
+from app.services.policy_service import (
+    PolicyAuditContext,
+    PolicyService,
+    evaluate_policy,
+)
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.workflows.safeagent_nodes import append_node_trace
@@ -310,9 +314,16 @@ def policy_recheck_node(
         state.add_error("PENDING_ACTION_INVALID", "缺少 ActionPlan", "policy_recheck_node")
         return state
     services.pending_action_service.mark_confirmed(state.pending_action_id)
-    policy_decision = services.policy_service.evaluate(
+    policy_decision = evaluate_policy(
+        services.policy_service,
         state.action_plan,
         customer_user_id=state.user_id,
+        audit_context=PolicyAuditContext(
+            run_id=state.run_id,
+            request_id=state.request_id,
+            session_id=state.session_id,
+            user_id=state.user_id,
+        ),
     )
     state.policy_decision = policy_decision
     append_node_trace(
@@ -652,4 +663,3 @@ def build_default_failure_handler_from_tool_gateway(
 ) -> FailureHandler:
     db_path = getattr(tool_gateway, "db_path", None)
     return FailureHandler(db_path=Path(db_path) if db_path else None)
-

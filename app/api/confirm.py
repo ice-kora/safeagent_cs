@@ -11,7 +11,11 @@ from app.services.pending_action_service import (
     PendingActionPermissionError,
     PendingActionService,
 )
-from app.services.policy_service import PolicyService
+from app.services.policy_service import (
+    PolicyAuditContext,
+    PolicyService,
+    evaluate_policy,
+)
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.workflows.confirm_adapter import (
@@ -196,9 +200,16 @@ def _execute_confirmed_action(
     pending_action_service.mark_confirmed(request.pending_action_id)
 
     # 二次确认后必须重新复核策略，防止订单状态或权限在等待期间发生变化。
-    policy_decision = policy_service.evaluate(
+    policy_decision = evaluate_policy(
+        policy_service,
         action_plan,
         customer_user_id=request.user_id,
+        audit_context=PolicyAuditContext(
+            run_id=run_id,
+            request_id=request_id,
+            session_id=request.session_id,
+            user_id=request.user_id,
+        ),
     )
     trace_service.append_trace(
         run_id=run_id,

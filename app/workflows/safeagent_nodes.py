@@ -3,7 +3,9 @@ from typing import Any
 from app.core.constants import PolicyDecisionType
 from app.core.failure_result import FailureHandlingStatus
 from app.core.tool_result import ToolResult
+from app.services.checkpoint_service import CheckpointService
 from app.services.logging_service import LoggingService
+from app.services.policy_service import PolicyAuditContext, evaluate_policy
 from app.workflows.safeagent_state import SafeAgentWorkflowState
 from app.workflows.service_adapters import (
     SafeAgentWorkflowServices,
@@ -96,7 +98,7 @@ def intent_node(
         node_name="intent_node",
         event_type="intent_classified",
         input_json={"message": state.message},
-        output_json={"intent": intent},
+        output_json={"intent": intent, "llm": _llm_debug_info(services.intent_classifier)},
         summary=f"intent={intent}",
     )
     return state
@@ -118,7 +120,10 @@ def planner_node(
         node_name="planner_node",
         event_type="plan_generated",
         input_json={"intent": state.intent_result, "message": state.message},
-        output_json={"action_plan": action_plan.to_dict()},
+        output_json={
+            "action_plan": action_plan.to_dict(),
+            "llm": _llm_debug_info(services.action_planner),
+        },
         summary=f"action={action_plan.action}",
     )
     return state
@@ -167,9 +172,17 @@ def policy_node(
         state.add_error("PLAN_INVALID", "缺少 ActionPlan", "policy_node")
         return state
 
-    policy_decision = services.policy_service.evaluate(
+    policy_decision = evaluate_policy(
+        services.policy_service,
         state.action_plan,
         customer_user_id=state.user_id,
+        audit_context=PolicyAuditContext(
+            run_id=state.run_id,
+            request_id=state.request_id,
+            session_id=state.session_id,
+            user_id=state.user_id,
+            tenant_id=state.tenant_id,
+        ),
     )
     state.policy_decision = policy_decision
     append_node_trace(
@@ -259,6 +272,20 @@ def failure_handler_node(
         state.add_error("WORKFLOW_FAILED", "缺少 ToolResult", "failure_handler_node")
         return state
 
+    if state.tool_result.error_type == "POLICY_NOT_FOUND":
+        state.final_status = "POLICY_NOT_FOUND"
+        append_node_trace(
+            state,
+            services,
+            node_name="failure_handler_node",
+            event_type="rag_no_answer",
+            input_json={"tool_result": state.tool_result.to_dict()},
+            output_json={"final_status": state.final_status},
+            status="SUCCESS",
+            summary="RAG 未找到足够可靠的知识依据",
+        )
+        return state
+
     if state.tool_result.success:
         failure_result = services.failure_handler.handle_tool_result(
             run_id=state.run_id,
@@ -325,6 +352,7 @@ def pending_action_node(
         risk_level=state.policy_decision.risk_level.value,
     )
     state.pending_action_id = pending_action_id
+    state.checkpoint_id = _create_confirmation_checkpoint(state, services)
     state.final_status = PolicyDecisionType.CONFIRM_REQUIRED.value
     append_node_trace(
         state,
@@ -332,7 +360,10 @@ def pending_action_node(
         node_name="pending_action_node",
         event_type="pending_action_created",
         input_json={"action_plan": state.action_plan.to_dict()},
-        output_json={"pending_action_id": pending_action_id},
+        output_json={
+            "pending_action_id": pending_action_id,
+            "checkpoint_id": state.checkpoint_id,
+        },
         summary=pending_action_id,
     )
     return state
@@ -434,11 +465,60 @@ def _build_rule_response(state: SafeAgentWorkflowState) -> str:
         return "该请求需要人工处理"
     if state.final_status == PolicyDecisionType.DENY.value:
         return state.policy_decision.reason if state.policy_decision else "请求已被拒绝"
+    if state.final_status == "POLICY_NOT_FOUND":
+        return (
+            state.tool_result.summary
+            if state.tool_result
+            else "暂未找到相关政策，建议转人工客服。"
+        )
     if state.final_status == "PLAN_INVALID":
         return "计划结构校验失败，无法继续处理"
     if state.final_status == "TOOL_FAILED":
+        if state.tool_result and state.tool_result.error_type == "POLICY_NOT_FOUND":
+            return state.tool_result.summary
         return "工具调用失败"
     return "Workflow 已安全停止处理"
+
+
+def _llm_debug_info(component: Any) -> dict[str, Any] | None:
+    debug_info = getattr(component, "last_debug_info", None)
+    if not isinstance(debug_info, dict) or not debug_info:
+        return None
+    return LoggingService.sanitize_payload(debug_info)
+
+
+def _create_confirmation_checkpoint(
+    state: SafeAgentWorkflowState,
+    services: SafeAgentWorkflowServices,
+) -> str:
+    checkpoint_service = CheckpointService(
+        db_path=services.pending_action_service.db_path
+    )
+    return checkpoint_service.create_checkpoint(
+        run_id=state.run_id,
+        parent_run_id=state.parent_run_id,
+        session_id=state.session_id,
+        user_id=state.user_id,
+        current_node="pending_action_node",
+        checkpoint_type=CheckpointService.TYPE_WAITING_CONFIRMATION,
+        status=CheckpointService.STATUS_WAITING_CONFIRMATION,
+        state_snapshot={
+            "pending_action_id": state.pending_action_id,
+            "action_plan": state.action_plan.to_dict() if state.action_plan else None,
+            "risk_level": (
+                state.policy_decision.risk_level.value
+                if state.policy_decision
+                else None
+            ),
+        },
+        resume_policy={
+            "resume_api": "/api/checkpoints/{checkpoint_id}/resume",
+            "next_api": "/api/confirm",
+            "requires_validator": True,
+            "requires_policy": True,
+            "tool_execution_on_resume": False,
+        },
+    )
 
 
 def llm_output_guard_node(

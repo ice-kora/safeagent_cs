@@ -14,6 +14,8 @@ v0.6-Tool-R1 起白名单与 ToolAdapterRegistry 注册解耦：
 任何一步缺失都应 fail closed。
 """
 
+import os
+
 ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "knowledge_tool.query_policy",
@@ -23,6 +25,8 @@ ALLOWED_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+OPTIONAL_MCP_TOOL_NAMES: frozenset[str] = frozenset({"mcp.mock.echo"})
+
 
 def is_tool_allowed(tool_name: str) -> bool:
     """判断工具名是否在显式安全白名单中。
@@ -30,4 +34,10 @@ def is_tool_allowed(tool_name: str) -> bool:
     与 registry 是否注册无关；这是 ToolGateway 执行前的独立安全校验，
     避免“adapter 注册即暴露”。
     """
-    return tool_name in ALLOWED_TOOL_NAMES
+    if tool_name in ALLOWED_TOOL_NAMES:
+        return True
+    return (
+        os.getenv("SAFEAGENT_MCP_MOCK_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and tool_name in OPTIONAL_MCP_TOOL_NAMES
+    )

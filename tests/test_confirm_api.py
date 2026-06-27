@@ -17,6 +17,8 @@ from app.services.repository_service import RepositoryService
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.storage.db import get_connection
+from app.storage.runtime_config import RUNTIME_BACKEND_POSTGRES, get_runtime_database_settings
+from app.storage.runtime_store import get_runtime_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +88,24 @@ def _create_pending_action(
 
 
 def _run_row(db_path: Path, run_id: str) -> dict[str, object]:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(get_runtime_database_settings().database_url, row_factory=dict_row) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT run_id, request_id, parent_run_id, pending_action_id, status
+                    FROM agent_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return dict(row)
+
     with get_connection(db_path) as connection:
         row = connection.execute(
             """
@@ -98,9 +118,29 @@ def _run_row(db_path: Path, run_id: str) -> dict[str, object]:
     return dict(row)
 
 
-def _tool_call_count(db_path: Path) -> int:
+def _tool_call_count(db_path: Path, run_id: str | None = None) -> int:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+
+        with psycopg.connect(get_runtime_database_settings().database_url) as connection:
+            with connection.cursor() as cursor:
+                if run_id is None:
+                    cursor.execute("SELECT COUNT(*) FROM tool_call_logs")
+                else:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM tool_call_logs WHERE run_id = %s",
+                        (run_id,),
+                    )
+                return cursor.fetchone()[0]
+
     with get_connection(db_path) as connection:
-        return connection.execute("SELECT COUNT(*) FROM tool_call_logs").fetchone()[0]
+        if run_id is None:
+            return connection.execute("SELECT COUNT(*) FROM tool_call_logs").fetchone()[0]
+        return connection.execute(
+            "SELECT COUNT(*) FROM tool_call_logs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
 
 
 def test_confirm_false_cancels_pending_action(tmp_path: Path) -> None:
@@ -184,6 +224,7 @@ def test_confirm_rejects_session_mismatch_without_tool_call(
     client, pending_action_service, _, db_path = _client_with_services(tmp_path)
     try:
         pending_action_id = _create_pending_action(pending_action_service)
+        before_tool_calls = _tool_call_count(db_path)
 
         response = client.post(
             "/api/confirm",
@@ -198,7 +239,7 @@ def test_confirm_rejects_session_mismatch_without_tool_call(
         assert response.status_code == 403
         assert "session 不匹配" in response.json()["detail"]
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "PENDING"
-        assert _tool_call_count(db_path) == 0
+        assert _tool_call_count(db_path) == before_tool_calls
     finally:
         _clear_overrides()
 
@@ -249,7 +290,7 @@ def test_confirm_policy_denied_does_not_call_tool_gateway(tmp_path: Path) -> Non
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "DENY"
-        assert _tool_call_count(db_path) == 0
+        assert _tool_call_count(db_path, body["run_id"]) == 0
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "CONFIRMED"
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "confirm_request_received",
@@ -281,7 +322,7 @@ def test_confirm_success_calls_tool_gateway_and_marks_executed(
         assert body["status"] == "EXECUTED"
         assert body["tool_result"]["success"] is True
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "EXECUTED"
-        assert _tool_call_count(db_path) == 1
+        assert _tool_call_count(db_path, body["run_id"]) == 1
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "confirm_request_received",
             "policy_review_result",

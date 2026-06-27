@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from app.core.idempotency import build_tool_idempotency_facts
 from app.core.tool_allowlist import is_tool_allowed
 from app.core.tool_result import ToolError, ToolResult
 from app.services.logging_service import LoggingService
-from app.storage.db import get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 from app.tools.adapter import ToolExecutionContext, ToolRequest
 from app.tools.registry import (
     ToolAdapterNotFoundError,
@@ -45,7 +46,15 @@ class ToolGateway:
         self.adapter_registry = adapter_registry or build_adapter_registry(
             get_settings().tool_backend
         )
-        init_db(self.db_path)
+        if (
+            os.getenv("SAFEAGENT_MCP_MOCK_ENABLED", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and not self.adapter_registry.has_tool("mcp.mock.echo")
+        ):
+            from app.tools.mcp_adapter import MCPToolAdapter
+
+            self.adapter_registry.register(MCPToolAdapter())
+        self.runtime_store = get_runtime_store(db_path=self.db_path)
 
     def call_tool(
         self,
@@ -197,38 +206,31 @@ class ToolGateway:
             }
         )
         status = "SUCCESS" if result.success else "FAILED"
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO tool_call_logs (
-                    id, tool_call_id, idempotency_key, action_fingerprint,
-                    run_id, session_id, tool_name, attempt_no,
-                    tool_args_json, tool_result_summary_json,
-                    status, failure_type, latency_ms
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    self._generate_log_id(),
-                    tool_call_id,
-                    idempotency_key,
-                    action_fingerprint,
-                    run_id,
-                    session_id,
-                    tool_name,
-                    attempt_no,
-                    json.dumps(sanitized_args, ensure_ascii=False, default=str),
-                    json.dumps(
-                        sanitized_result_summary,
-                        ensure_ascii=False,
-                        default=str,
-                    ),
-                    status,
-                    result.error_type,
-                    latency_ms,
+        self.runtime_store.insert_tool_call_log(
+            {
+                "id": self._generate_log_id(),
+                "tool_call_id": tool_call_id,
+                "idempotency_key": idempotency_key,
+                "action_fingerprint": action_fingerprint,
+                "run_id": run_id,
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "attempt_no": attempt_no,
+                "tool_args_json": json.dumps(
+                    sanitized_args,
+                    ensure_ascii=False,
+                    default=str,
                 ),
-            )
-            connection.commit()
+                "tool_result_summary_json": json.dumps(
+                    sanitized_result_summary,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                "status": status,
+                "failure_type": result.error_type,
+                "latency_ms": latency_ms,
+            }
+        )
 
     @staticmethod
     def _generate_log_id() -> str:

@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -40,14 +42,15 @@ class LoggingService:
     """
 
     def __init__(self, log_path: str | Path | None = None) -> None:
-        self.log_path = Path(log_path) if log_path else DEFAULT_LOG_PATH
+        configured_log_path = log_path or os.getenv("SAFEAGENT_LOG_PATH")
+        self.log_path = Path(configured_log_path) if configured_log_path else DEFAULT_LOG_PATH
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         logger_name = f"safeagent.{self.log_path.resolve()}"
         self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
         if not self.logger.handlers:
-            handler = logging.FileHandler(self.log_path, encoding="utf-8")
+            handler = self._build_file_handler(self.log_path)
             handler.setFormatter(logging.Formatter("%(message)s"))
             self.logger.addHandler(handler)
 
@@ -64,6 +67,15 @@ class LoggingService:
     def security(self, event: str, payload: dict[str, Any]) -> None:
         """写入安全相关日志，后续可升级为 security_logs 的统一入口。"""
         self._write("SECURITY", event, payload)
+
+    def _build_file_handler(self, log_path: Path) -> logging.FileHandler:
+        try:
+            return logging.FileHandler(log_path, encoding="utf-8")
+        except PermissionError:
+            fallback_path = Path(tempfile.gettempdir()) / "safeagent-cs" / "application.log"
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_path = fallback_path
+            return logging.FileHandler(fallback_path, encoding="utf-8")
 
     def _write(self, level: str, event: str, payload: dict[str, Any]) -> None:
         record = {

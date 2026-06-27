@@ -31,6 +31,8 @@ from app.services.repository_service import RepositoryService
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.storage.db import get_connection
+from app.storage.runtime_config import RUNTIME_BACKEND_POSTGRES, get_runtime_database_settings
+from app.storage.runtime_store import get_runtime_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -186,19 +188,53 @@ def _count_rows(db_path: Path, table_name: str) -> int:
         return connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
 
 
-def _tool_logs(db_path: Path) -> list[dict[str, object]]:
+def _tool_logs(db_path: Path, run_id: str) -> list[dict[str, object]]:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(get_runtime_database_settings().database_url, row_factory=dict_row) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT tool_name, status, attempt_no
+                    FROM tool_call_logs
+                    WHERE run_id = %s
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (run_id,),
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
     with get_connection(db_path) as connection:
         rows = connection.execute(
             """
             SELECT tool_name, status, attempt_no
             FROM tool_call_logs
+            WHERE run_id = ?
             ORDER BY created_at ASC, rowid ASC
-            """
+            """,
+            (run_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 def _run_row(db_path: Path, run_id: str) -> dict[str, object]:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(get_runtime_database_settings().database_url, row_factory=dict_row) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT run_id, status FROM agent_runs WHERE run_id = %s",
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return dict(row)
+
     with get_connection(db_path) as connection:
         row = connection.execute(
             "SELECT run_id, status FROM agent_runs WHERE run_id = ?",
@@ -245,7 +281,7 @@ def test_chat_policy_query_successes_through_knowledge_tool(tmp_path: Path) -> N
         assert body["action"] == "query_policy"
         assert body["policy_decision"]["decision"] == "ALLOW"
         assert body["tool_result"]["tool_name"] == "knowledge_tool.query_policy"
-        assert _tool_logs(db_path)[0]["tool_name"] == "knowledge_tool.query_policy"
+        assert _tool_logs(db_path, body["run_id"])[0]["tool_name"] == "knowledge_tool.query_policy"
         assert _run_row(db_path, body["run_id"])["status"] == "SUCCESS"
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "intent_classification",
@@ -270,7 +306,7 @@ def test_chat_query_own_order_successes_through_order_tool(tmp_path: Path) -> No
         assert body["action"] == "query_order"
         assert body["tool_result"]["tool_name"] == "order_tool.query_order"
         assert body["tool_result"]["data"]["order_id"] == "O10086"
-        assert _tool_logs(db_path)[0]["tool_name"] == "order_tool.query_order"
+        assert _tool_logs(db_path, body["run_id"])[0]["tool_name"] == "order_tool.query_order"
     finally:
         _clear_overrides()
 
@@ -295,7 +331,7 @@ def test_chat_query_other_user_order_denied_without_tool_gateway(
         assert body["policy_decision"]["decision"] == "DENY"
         assert spy_policy.calls == 1
         assert spy_gateway.calls == 0
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert _tool_logs(db_path, body["run_id"]) == []
     finally:
         _clear_overrides()
 
@@ -318,8 +354,8 @@ def test_chat_change_unshipped_address_creates_pending_action(
         assert body["pending_action_id"].startswith("pa_")
         assert pending_action["status"] == "PENDING"
         assert pending_action["source_run_id"] == body["run_id"]
-        assert _count_rows(db_path, "pending_actions") == 1
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert pending_action["pending_action_id"] == body["pending_action_id"]
+        assert _tool_logs(db_path, body["run_id"]) == []
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "intent_classification",
             "action_planning",
@@ -345,7 +381,7 @@ def test_chat_prompt_injection_denied_without_tool_gateway(tmp_path: Path) -> No
         assert body["status"] == "DENY"
         assert body["intent"] == "prompt_injection"
         assert spy_gateway.calls == 0
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert _tool_logs(db_path, body["run_id"]) == []
     finally:
         _clear_overrides()
 
@@ -378,7 +414,7 @@ def test_chat_human_required_skips_tool_gateway(
         assert body["status"] == "HUMAN_REQUIRED"
         assert body["intent"] == expected_intent
         assert spy_gateway.calls == 0
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert _tool_logs(db_path, body["run_id"]) == []
         assert "human_required" in trace_nodes
     finally:
         _clear_overrides()
@@ -405,7 +441,7 @@ def test_chat_validator_failure_skips_policy_and_tool_gateway(
         assert body["validation_result"]["status"] == "PLAN_INVALID"
         assert spy_policy.calls == 0
         assert spy_gateway.calls == 0
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert _tool_logs(db_path, body["run_id"]) == []
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "intent_classification",
             "action_planning",
@@ -437,7 +473,7 @@ def test_chat_tool_retry_recovered_returns_recovered(tmp_path: Path) -> None:
         assert body["failure_result"] is not None
         assert body["failure_result"]["status"] == "RECOVERED"
         assert [call["attempt_no"] for call in fake_gateway.calls] == [1, 2]
-        assert [log["attempt_no"] for log in _tool_logs(db_path)] == [1, 2]
+        assert [log["attempt_no"] for log in _tool_logs(db_path, body["run_id"])] == [1, 2]
         assert _run_row(db_path, body["run_id"])["status"] == "SUCCESS"
     finally:
         _clear_overrides()
@@ -488,7 +524,7 @@ def test_chat_unknown_policy_decision_fails_safely_without_tool_gateway(
         assert body["status"] == "POLICY_DECISION_INVALID"
         assert policy_service.calls == 1
         assert spy_gateway.calls == 0
-        assert _count_rows(db_path, "tool_call_logs") == 0
+        assert _tool_logs(db_path, body["run_id"]) == []
         assert _run_row(db_path, body["run_id"])["status"] == "FAILED"
     finally:
         _clear_overrides()
@@ -502,7 +538,7 @@ def test_chat_every_request_creates_run_and_traces(tmp_path: Path) -> None:
 
         assert body["request_id"].startswith("req_")
         assert body["run_id"].startswith("run_")
-        assert _count_rows(db_path, "agent_runs") == 1
+        assert _run_row(db_path, body["run_id"])["status"] == "SUCCESS"
         assert len(trace_service.get_traces(body["run_id"])) >= 4
     finally:
         _clear_overrides()

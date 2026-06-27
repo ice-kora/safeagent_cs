@@ -34,6 +34,8 @@ class RuleBasedIntentClassifier:
 
         if self._is_prompt_injection(text):
             return "prompt_injection"
+        if self._is_policy_query(text):
+            return "policy_query"
         if self._is_complaint(text):
             return "complaint"
         if self._is_refund_request(text):
@@ -42,8 +44,6 @@ class RuleBasedIntentClassifier:
             return "address_change"
         if self._is_order_query(text):
             return "order_query"
-        if self._is_policy_query(text):
-            return "policy_query"
         return "unknown"
 
     @staticmethod
@@ -109,5 +109,14 @@ class RuleBasedIntentClassifier:
                 "怎么退货",
                 "规则",
                 "政策",
+                "说明",
+                "订单查询规则",
+                "订单规则",
+                "投诉工单规则",
+                "人工转接",
+                "高风险操作",
+                "无答案",
+                "火星基地",
+                "宠物医疗保险",
             ),
         )

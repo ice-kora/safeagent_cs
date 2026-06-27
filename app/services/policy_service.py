@@ -1,10 +1,27 @@
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
 from app.core.action_plan import ActionPlan
 from app.core.constants import PolicyDecisionType
 from app.core.policy import PolicyDecision
 from app.core.risk import RiskLevel
 from app.core.security_context import SecurityContext
+from app.services.logging_service import LoggingService
 from app.services.policy_rules import PolicyEvaluationContext, PolicyRuleRegistry
 from app.services.repository_service import RepositoryService
+from app.storage.runtime_store import RuntimeStore, get_runtime_store
+
+
+@dataclass(frozen=True)
+class PolicyAuditContext:
+    run_id: str
+    session_id: str
+    user_id: str
+    request_id: str | None = None
+    role: str | None = None
+    tenant_id: str | None = None
 
 
 class PolicyService:
@@ -32,15 +49,25 @@ class PolicyService:
         self,
         repository: RepositoryService | None = None,
         rule_registry: PolicyRuleRegistry | None = None,
+        runtime_store: RuntimeStore | None = None,
+        logging_service: LoggingService | None = None,
     ) -> None:
         self.repository = repository or RepositoryService()
         self.rule_registry = rule_registry or PolicyRuleRegistry()
+        self.runtime_store = (
+            runtime_store
+            or getattr(self.repository, "runtime_store", None)
+            or get_runtime_store()
+        )
+        self.logging_service = logging_service or LoggingService()
 
     def evaluate(
         self,
         action_plan: ActionPlan,
         customer_user_id: str,
         security_context: SecurityContext | None = None,
+        *,
+        audit_context: PolicyAuditContext | None = None,
     ) -> PolicyDecision:
         """对候选计划做真实权限与风险裁决。
 
@@ -52,6 +79,12 @@ class PolicyService:
             security_context,
         )
         if security_guard:
+            self._write_policy_log(
+                action_plan=action_plan,
+                customer_user_id=customer_user_id,
+                policy_decision=security_guard,
+                audit_context=audit_context,
+            )
             return security_guard
 
         context = PolicyEvaluationContext(
@@ -60,7 +93,14 @@ class PolicyService:
             repository=self.repository,
             security_context=security_context,
         )
-        return self.rule_registry.evaluate(context)
+        decision = self.rule_registry.evaluate(context)
+        self._write_policy_log(
+            action_plan=action_plan,
+            customer_user_id=customer_user_id,
+            policy_decision=decision,
+            audit_context=audit_context,
+        )
+        return decision
 
     def _validate_security_context(
         self,
@@ -83,3 +123,79 @@ class PolicyService:
     @staticmethod
     def _deny(risk_level: RiskLevel, reason: str) -> PolicyDecision:
         return PolicyDecision(PolicyDecisionType.DENY, risk_level, reason)
+
+    def _write_policy_log(
+        self,
+        *,
+        action_plan: ActionPlan,
+        customer_user_id: str,
+        policy_decision: PolicyDecision,
+        audit_context: PolicyAuditContext | None,
+    ) -> None:
+        if audit_context is None:
+            return
+        try:
+            self.runtime_store.insert_policy_log(
+                {
+                    "id": self._generate_log_id(),
+                    "run_id": audit_context.run_id,
+                    "request_id": audit_context.request_id,
+                    "session_id": audit_context.session_id,
+                    "user_id": audit_context.user_id or customer_user_id,
+                    "role": audit_context.role,
+                    "tenant_id": audit_context.tenant_id,
+                    "action": _safe_text(action_plan.action),
+                    "tool_name": _safe_text(action_plan.tool_name),
+                    "target_type": _safe_text(action_plan.target_type),
+                    "target_id": _safe_text(action_plan.target_id),
+                    "decision": policy_decision.decision.value,
+                    "risk_level": policy_decision.risk_level.value,
+                    "reason": LoggingService.sanitize_payload(policy_decision.reason),
+                    "code": policy_decision.decision.value,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            self.logging_service.warning(
+                "policy_log_write_failed",
+                {
+                    "run_id": audit_context.run_id,
+                    "session_id": audit_context.session_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+    @staticmethod
+    def _generate_log_id() -> str:
+        return f"pl_{uuid4().hex[:16]}"
+
+
+def evaluate_policy(
+    policy_service: Any,
+    action_plan: ActionPlan,
+    *,
+    customer_user_id: str,
+    audit_context: PolicyAuditContext | None = None,
+    security_context: SecurityContext | None = None,
+) -> PolicyDecision:
+    if isinstance(policy_service, PolicyService):
+        return policy_service.evaluate(
+            action_plan,
+            customer_user_id=customer_user_id,
+            security_context=security_context,
+            audit_context=audit_context,
+        )
+    if security_context is not None:
+        return policy_service.evaluate(
+            action_plan,
+            customer_user_id=customer_user_id,
+            security_context=security_context,
+        )
+    return policy_service.evaluate(
+        action_plan,
+        customer_user_id=customer_user_id,
+    )
+
+
+def _safe_text(value: Any) -> Any:
+    return LoggingService.sanitize_payload(value)

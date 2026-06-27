@@ -9,10 +9,15 @@ from app.core.constants import PolicyDecisionType
 from app.core.failure_result import FailureHandlingStatus
 from app.core.ids import generate_request_id
 from app.services.failure_handler import FailureHandler
+from app.services.checkpoint_service import CheckpointService
 from app.services.intent_service import RuleBasedIntentClassifier
 from app.services.pending_action_service import PendingActionService
 from app.services.planner_service import RuleBasedActionPlanner
-from app.services.policy_service import PolicyService
+from app.services.policy_service import (
+    PolicyAuditContext,
+    PolicyService,
+    evaluate_policy,
+)
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.workflows.chat_adapter import handle_workflow_chat
@@ -151,9 +156,16 @@ def chat(
         )
 
     # 4. PolicyService 是权限与风险的可信裁决边界，LLM/Planner 不能绕过它。
-    policy_decision = policy_service.evaluate(
+    policy_decision = evaluate_policy(
+        policy_service,
         action_plan,
         customer_user_id=request.user_id,
+        audit_context=PolicyAuditContext(
+            run_id=run_id,
+            request_id=request_id,
+            session_id=request.session_id,
+            user_id=request.user_id,
+        ),
     )
     trace_service.append_trace(
         run_id=run_id,
@@ -184,12 +196,22 @@ def chat(
             action_plan=action_plan,
             risk_level=policy_decision.risk_level.value,
         )
+        checkpoint_id = _create_confirmation_checkpoint(
+            run_id=run_id,
+            session_id=request.session_id,
+            user_id=request.user_id,
+            pending_action_id=pending_action_id,
+            action_plan=action_plan,
+            risk_level=policy_decision.risk_level.value,
+            pending_action_service=pending_action_service,
+        )
         trace_service.append_trace(
             run_id=run_id,
             node_name="pending_action_created",
             input_json={"action_plan": action_plan.to_dict()},
             output_json={
                 "pending_action_id": pending_action_id,
+                "checkpoint_id": checkpoint_id,
                 "risk_level": policy_decision.risk_level.value,
             },
         )
@@ -202,6 +224,7 @@ def chat(
             action=action_plan.action,
             policy_decision=policy_decision.to_dict(),
             pending_action_id=pending_action_id,
+            checkpoint_id=checkpoint_id,
             message="该操作需要二次确认",
         )
 
@@ -314,6 +337,19 @@ def _execute_allowed_action(
             message=tool_result.summary,
         )
 
+    if tool_result.error_type == "POLICY_NOT_FOUND":
+        trace_service.finish_run(run_id)
+        return _base_response(
+            request_id=request_id,
+            run_id=run_id,
+            status="POLICY_NOT_FOUND",
+            intent=intent,
+            action=action_plan.action,
+            policy_decision=policy_decision.to_dict(),
+            tool_result=tool_result.to_dict(),
+            message=tool_result.summary,
+        )
+
     # 工具失败时只允许 FailureHandler 通过 ToolGateway 重试，不能直接调用 Mock Tool。
     failure_result = failure_handler.handle_with_retry(
         run_id=run_id,
@@ -385,6 +421,7 @@ def _base_response(
     policy_decision: dict[str, Any] | None = None,
     tool_result: dict[str, Any] | None = None,
     pending_action_id: str | None = None,
+    checkpoint_id: str | None = None,
     validation_result: dict[str, Any] | None = None,
     failure_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -397,7 +434,57 @@ def _base_response(
         "policy_decision": policy_decision,
         "tool_result": tool_result,
         "pending_action_id": pending_action_id,
+        "checkpoint_id": checkpoint_id,
         "validation_result": validation_result,
         "failure_result": failure_result,
         "message": message,
+        "rag": _extract_rag_debug(tool_result),
+    }
+
+
+def _create_confirmation_checkpoint(
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    pending_action_id: str,
+    action_plan,
+    risk_level: str,
+    pending_action_service: PendingActionService,
+) -> str:
+    checkpoint_service = CheckpointService(db_path=pending_action_service.db_path)
+    return checkpoint_service.create_checkpoint(
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        current_node="pending_action_created",
+        checkpoint_type=CheckpointService.TYPE_WAITING_CONFIRMATION,
+        status=CheckpointService.STATUS_WAITING_CONFIRMATION,
+        state_snapshot={
+            "pending_action_id": pending_action_id,
+            "action_plan": action_plan.to_dict(),
+            "risk_level": risk_level,
+        },
+        resume_policy={
+            "resume_api": "/api/checkpoints/{checkpoint_id}/resume",
+            "next_api": "/api/confirm",
+            "requires_validator": True,
+            "requires_policy": True,
+            "tool_execution_on_resume": False,
+        },
+    )
+
+
+def _extract_rag_debug(tool_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not tool_result or tool_result.get("tool_name") != "knowledge_tool.query_policy":
+        return None
+    data = tool_result.get("data") or {}
+    return {
+        "query": data.get("query"),
+        "retrieval_mode": data.get("retrieval_mode"),
+        "embedding_model": data.get("embedding_model"),
+        "vector_store": data.get("vector_store"),
+        "vector_store_fallback": data.get("vector_store_fallback"),
+        "evidence": data.get("evidence") or [],
+        "citations": data.get("citations") or [],
     }

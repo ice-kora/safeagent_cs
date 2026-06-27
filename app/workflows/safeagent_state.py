@@ -32,6 +32,7 @@ class SafeAgentWorkflowState:
     policy_decision: PolicyDecision | None = None
 
     pending_action_id: str | None = None
+    checkpoint_id: str | None = None
     tool_result: ToolResult | None = None
     failure_result: FailureHandlingResult | None = None
 
@@ -99,6 +100,7 @@ class SafeAgentWorkflowState:
                 self.policy_decision.to_dict() if self.policy_decision else None
             ),
             "pending_action_id": self.pending_action_id,
+            "checkpoint_id": self.checkpoint_id,
             "tool_result": self._tool_result_to_safe_dict(),
             "failure_result": self._failure_result_to_safe_dict(),
             "final_status": self.final_status,

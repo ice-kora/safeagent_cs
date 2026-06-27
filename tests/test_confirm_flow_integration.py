@@ -17,6 +17,8 @@ from app.services.repository_service import RepositoryService
 from app.services.tool_gateway import ToolGateway
 from app.services.trace_service import TraceService
 from app.storage.db import get_connection
+from app.storage.runtime_config import RUNTIME_BACKEND_POSTGRES, get_runtime_database_settings
+from app.storage.runtime_store import get_runtime_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +99,24 @@ def _create_pending_action(
 
 
 def _run_row(db_path: Path, run_id: str) -> dict[str, object]:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(get_runtime_database_settings().database_url, row_factory=dict_row) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT run_id, parent_run_id, pending_action_id, status
+                    FROM agent_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return dict(row)
+
     with get_connection(db_path) as connection:
         row = connection.execute(
             """
@@ -109,15 +129,53 @@ def _run_row(db_path: Path, run_id: str) -> dict[str, object]:
     return dict(row)
 
 
-def _tool_call_logs(db_path: Path) -> list[dict[str, object]]:
+def _tool_call_logs(db_path: Path, run_id: str | None = None) -> list[dict[str, object]]:
+    store = get_runtime_store(db_path=db_path)
+    if store.backend == RUNTIME_BACKEND_POSTGRES:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(get_runtime_database_settings().database_url, row_factory=dict_row) as connection:
+            with connection.cursor() as cursor:
+                if run_id is None:
+                    cursor.execute(
+                        """
+                        SELECT tool_name, attempt_no, status, failure_type
+                        FROM tool_call_logs
+                        ORDER BY created_at ASC, id ASC
+                        """
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT tool_name, attempt_no, status, failure_type
+                        FROM tool_call_logs
+                        WHERE run_id = %s
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                        (run_id,),
+                    )
+                return [dict(row) for row in cursor.fetchall()]
+
     with get_connection(db_path) as connection:
-        rows = connection.execute(
-            """
-            SELECT tool_name, attempt_no, status, failure_type
-            FROM tool_call_logs
-            ORDER BY created_at ASC, rowid ASC
-            """
-        ).fetchall()
+        if run_id is None:
+            rows = connection.execute(
+                """
+                SELECT tool_name, attempt_no, status, failure_type
+                FROM tool_call_logs
+                ORDER BY created_at ASC, rowid ASC
+                """
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT tool_name, attempt_no, status, failure_type
+                FROM tool_call_logs
+                WHERE run_id = ?
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                (run_id,),
+            ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -144,7 +202,7 @@ def test_confirm_true_executes_medium_risk_action_end_to_end(
         body = response.json()
         run = _run_row(db_path, body["run_id"])
         traces = trace_service.get_traces(body["run_id"])
-        tool_logs = _tool_call_logs(db_path)
+        tool_logs = _tool_call_logs(db_path, body["run_id"])
 
         assert body["status"] == "EXECUTED"
         assert body["run_id"].startswith("run_")
@@ -171,6 +229,7 @@ def test_confirm_false_marks_pending_action_cancelled(tmp_path: Path) -> None:
     client, pending_action_service, _, policy_service, db_path = _build_client(tmp_path)
     try:
         pending_action_id = _create_pending_action(pending_action_service)
+        before_tool_logs = _tool_call_logs(db_path)
 
         response = client.post(
             "/api/confirm",
@@ -186,7 +245,7 @@ def test_confirm_false_marks_pending_action_cancelled(tmp_path: Path) -> None:
         assert response.json()["status"] == "CANCELLED"
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "CANCELLED"
         assert policy_service.evaluate_calls == 0
-        assert _tool_call_logs(db_path) == []
+        assert _tool_call_logs(db_path) == before_tool_logs
     finally:
         _clear_overrides()
 
@@ -198,6 +257,7 @@ def test_expired_pending_action_is_marked_expired(tmp_path: Path) -> None:
             pending_action_service,
             ttl_minutes=-1,
         )
+        before_tool_logs = _tool_call_logs(db_path)
 
         response = client.post(
             "/api/confirm",
@@ -212,7 +272,7 @@ def test_expired_pending_action_is_marked_expired(tmp_path: Path) -> None:
         assert response.status_code == 400
         assert "已过期" in response.json()["detail"]
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "EXPIRED"
-        assert _tool_call_logs(db_path) == []
+        assert _tool_call_logs(db_path) == before_tool_logs
     finally:
         _clear_overrides()
 
@@ -221,6 +281,7 @@ def test_session_mismatch_rejects_without_tool_call(tmp_path: Path) -> None:
     client, pending_action_service, _, _, db_path = _build_client(tmp_path)
     try:
         pending_action_id = _create_pending_action(pending_action_service)
+        before_tool_logs = _tool_call_logs(db_path)
 
         response = client.post(
             "/api/confirm",
@@ -235,7 +296,7 @@ def test_session_mismatch_rejects_without_tool_call(tmp_path: Path) -> None:
         assert response.status_code == 403
         assert "session 不匹配" in response.json()["detail"]
         assert pending_action_service.get_pending_action(pending_action_id)["status"] == "PENDING"
-        assert _tool_call_logs(db_path) == []
+        assert _tool_call_logs(db_path) == before_tool_logs
     finally:
         _clear_overrides()
 
@@ -264,7 +325,7 @@ def test_policy_denied_does_not_call_tool_gateway(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert body["status"] == "DENY"
         assert policy_service.evaluate_calls == 1
-        assert _tool_call_logs(db_path) == []
+        assert _tool_call_logs(db_path, body["run_id"]) == []
         assert [trace["node_name"] for trace in trace_service.get_traces(body["run_id"])] == [
             "confirm_request_received",
             "policy_review_result",

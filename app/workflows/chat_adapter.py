@@ -125,11 +125,15 @@ def workflow_state_to_chat_response(
         ),
         "tool_result": state.tool_result.to_dict() if state.tool_result else None,
         "pending_action_id": state.pending_action_id,
+        "checkpoint_id": state.checkpoint_id,
         "validation_result": _validation_to_dict(state),
         "failure_result": (
             state.failure_result.to_dict() if state.failure_result else None
         ),
         "message": state.final_response or "Workflow 已安全停止处理",
+        "rag": _extract_rag_debug(
+            state.tool_result.to_dict() if state.tool_result else None
+        ),
     }
 
 
@@ -139,4 +143,19 @@ def _validation_to_dict(state: SafeAgentWorkflowState) -> dict[str, str] | None:
     return {
         "status": state.validation_result.status.value,
         "reason": state.validation_result.reason,
+    }
+
+
+def _extract_rag_debug(tool_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not tool_result or tool_result.get("tool_name") != "knowledge_tool.query_policy":
+        return None
+    data = tool_result.get("data") or {}
+    return {
+        "query": data.get("query"),
+        "retrieval_mode": data.get("retrieval_mode"),
+        "embedding_model": data.get("embedding_model"),
+        "vector_store": data.get("vector_store"),
+        "vector_store_fallback": data.get("vector_store_fallback"),
+        "evidence": data.get("evidence") or [],
+        "citations": data.get("citations") or [],
     }
