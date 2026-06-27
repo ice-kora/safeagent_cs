@@ -2,7 +2,7 @@
 
 SafeAgent-CS 是一个企业级受控客服 Agent 执行平台。项目重点不是让 LLM（大语言模型）直接接管业务，而是把意图识别、计划生成、RAG（检索增强生成）和工具调用放进可审计、可测试、可回滚的安全执行框架里。
 
-当前阶段：v0.3 Engineering Closure。
+当前阶段：v1.0 Product Completion，本地 demo-ready 收口版本。
 
 当前核心结论：
 
@@ -64,8 +64,8 @@ User
 - `app/core/`：核心数据结构、常量、校验结果。
 - `app/services/`：安全内核与业务服务。
 - `app/tools/`：Mock 工具与受控工具能力。
-- `app/rag/`：本地轻量 RAG 能力。
-- `app/workflows/`：workflow 编排、LangGraph engine、checkpoint readiness。
+- `app/rag/`：政策知识检索、证据召回、rerank、Milvus/BGE-M3 demo RAG 能力。
+- `app/workflows/`：workflow 编排、LangGraph engine、checkpoint / resume。
 - `app/evaluation/`：安全回归与 RAG 评测。
 - `tests/`：确定性测试。
 
@@ -129,11 +129,12 @@ engine 只在 `SAFEAGENT_WORKFLOW_MODE=workflow` 时生效。非法值回退 `st
 
 ## 6. RAG KnowledgeTool
 
-当前 RAG 是本地轻量 MVP（最小可行产品）：
+当前 v1.0 RAG 面向政策知识问答，支持本地静态语料和 Milvus + BGE-M3 demo 路径：
 
 - 只服务 `knowledge_tool.query_policy`。
-- 使用静态政策语料。
-- 支持 chunk、retrieval、rerank 和 citation quality eval。
+- 使用 `docs/knowledge/` 下的政策语料。
+- 支持 chunk、retrieval、rerank、citation quality eval 和 no-answer handoff。
+- Milvus demo collection 为 `safeagent_knowledge`，BGE-M3 默认模型为 `BAAI/bge-m3`。
 - 返回 answer、sources 和安全摘要。
 - 不参与订单权限裁决。
 - 不替代 PolicyService。
@@ -149,7 +150,7 @@ engine 只在 `SAFEAGENT_WORKFLOW_MODE=workflow` 时生效。非法值回退 `st
 
 ## 8. LangGraph Chat Workflow
 
-v0.3 已接入真实 LangGraph chat workflow engine，但默认不启用。
+v1.0 已接入真实 LangGraph chat workflow engine，默认仍可通过配置保持手写主链路。
 
 LangGraph 只负责编排：
 
@@ -168,9 +169,9 @@ LangGraph 不负责：
 
 这些仍由现有服务负责。
 
-## 9. Checkpoint / Resume Readiness
+## 9. Checkpoint / Resume
 
-当前只完成 readiness，不启用真实 resume：
+当前 v1.0 支持 checkpoint / resume demo 流程，仍保持“不直接恢复执行工具”的安全边界：
 
 - JSON-safe checkpoint snapshot。
 - schema version。
@@ -183,10 +184,9 @@ LangGraph 不负责：
 
 明确未做：
 
-- 未启用 LangGraph checkpointer。
-- 未接 `MemorySaver` / `SQLiteSaver`。
-- 未新增 `/api/resume`。
-- 未恢复执行工具。
+- 未启用生产级 LangGraph checkpointer。
+- 未接生产级持久化 checkpointer。
+- 未恢复执行工具绕过 `/api/confirm`。
 - 未重复创建 pending action。
 
 ## 10. 快速启动
@@ -214,13 +214,13 @@ GET http://127.0.0.1:8000/api/health
 P0 标准 API Demo：
 
 ```bash
-python demo_safeagent_cs.py
+python demo\demo_safeagent_cs.py
 ```
 
-v0.3 本地能力 Demo：
+本地能力 Demo：
 
 ```bash
-python demo_v03_safeagent.py
+python demo\demo_v03_safeagent.py
 ```
 
 `demo_v03_safeagent.py` 不启动服务、不接外部网络、不接真实 LLM，使用临时 SQLite 展示：
@@ -258,27 +258,24 @@ python -m pytest tests/test_demo_v03.py
 
 ## 13. 当前测试基线
 
-Phase 12A 完成前基线：
+v1.0 收口基线：
 
 ```text
-317 passed, 1 warning
+544 passed, 15 skipped, 1 warning
 ```
 
-Phase 12A 新增 v0.3 demo 测试后，本地执行结果以当前 `python -m pytest` 输出为准。
-
-warning 为第三方 `TestClient` 弃用提示，不影响当前验收。
+warning 为第三方 `TestClient` 或运行时依赖的弃用提示，不影响当前验收。
 
 ## 14. 项目边界
 
 当前未实现：
 
-- 真实 LLM Provider Adapter。
-- 真实外部向量数据库。
-- 真实 LangGraph checkpoint 持久化。
-- 真实 resume 执行。
-- `/api/resume`。
-- MCP 工具接入。
-- 前端控制台。
+- 生产级 LLM Provider Adapter 灰度与观测。
+- 生产级外部向量数据库部署治理。
+- 生产级 LangGraph checkpoint 持久化。
+- 绕过确认流程的真实 resume 执行。
+- MCP 真实外部工具接入。
+- 生产级前端控制台。
 - 完整 AuthN/AuthZ（认证与授权）体系。
 - 多租户生产隔离。
 - 真实订单、支付、退款系统接入。
