@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SafeAgent Console</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>SafeAgent Console</h1>
+          <p id="statusText">Idle</p>
+        </div>
+        <button id="refreshBtn" type="button" disabled>Refresh Run</button>
+      </header>
+
+      <nav class="tabs" aria-label="Console views">
+        <button id="customerTab" class="tab-button active" type="button">Customer Chat</button>
+        <button id="debugTab" class="tab-button" type="button">Debug Console</button>
+      </nav>
+
+      <section id="customerChat" class="tab-view active">
+        <section class="customer-layout">
+          <aside class="case-panel">
+            <div class="field-grid compact-grid">
+              <label>
+                User ID
+                <input id="chatUserId" value="u_1001" autocomplete="off" />
+              </label>
+              <label>
+                Session ID
+                <input id="chatSessionId" value="sess_console" autocomplete="off" />
+              </label>
+            </div>
+            <p class="local-note">Local/demo/internal only.</p>
+            <div id="demoCases" class="case-list"></div>
+            <section class="resume-box">
+              <div class="section-title">
+                <h2>Resumable</h2>
+                <button id="loadCheckpointsBtn" type="button" class="secondary">Load</button>
+              </div>
+              <div id="checkpointList" class="mini-list empty">No checkpoints.</div>
+            </section>
+          </aside>
+
+          <section class="chat-panel">
+            <div id="chatTimeline" class="chat-timeline"></div>
+            <div id="chatStatusSteps" class="status-steps"></div>
+            <div id="chatPendingPanel" class="pending-panel hidden">
+              <span id="chatPendingText"></span>
+              <div class="actions compact">
+                <button id="chatConfirmBtn" type="button">Confirm</button>
+                <button id="chatCancelBtn" type="button" class="secondary">Cancel</button>
+              </div>
+            </div>
+            <form id="customerChatForm" class="chat-compose">
+              <textarea id="chatMessage" rows="3" placeholder="Type a customer message">帮我查一下订单 O10086</textarea>
+              <button id="chatSendBtn" type="submit">Send</button>
+            </form>
+          </section>
+        </section>
+
+        <section class="debug-details">
+          <div class="section-title">
+            <h2>Debug Details</h2>
+            <button id="toggleDebugBtn" type="button" class="secondary">View Details</button>
+          </div>
+          <div id="customerDebugGrid" class="observability-grid compact hidden">
+            <section class="data-panel">
+              <h2>Run</h2>
+              <pre id="customerRunView" class="json-view empty">No run.</pre>
+            </section>
+            <section class="data-panel">
+              <h2>RAG Evidence</h2>
+              <div id="customerRagView" class="list-view empty">No RAG evidence.</div>
+            </section>
+            <section class="data-panel">
+              <h2>LLM Signals</h2>
+              <div id="customerLlmView" class="list-view empty">No LLM signals.</div>
+            </section>
+            <section class="data-panel">
+              <h2>Checkpoint Timeline</h2>
+              <div id="customerCheckpointView" class="list-view empty">No checkpoint timeline.</div>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section id="debugConsole" class="tab-view">
+        <section class="workspace">
+          <form id="chatForm" class="compose-panel">
+            <div class="field-grid">
+              <label>
+                User ID
+                <input id="userId" name="user_id" value="u_1001" autocomplete="off" />
+              </label>
+              <label>
+                Session ID
+                <input
+                  id="sessionId"
+                  name="session_id"
+                  value="sess_console"
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+            <label>
+              Message
+              <textarea id="message" name="message" rows="5">你们支持七天无理由退货吗？</textarea>
+            </label>
+            <div class="actions">
+              <button id="sendBtn" type="submit">Send</button>
+              <button id="clearBtn" type="button">Clear</button>
+            </div>
+          </form>
+
+          <section class="result-panel">
+            <div class="section-title">
+              <h2>Response</h2>
+              <span id="runIdBadge">run_id: none</span>
+            </div>
+            <pre id="responseView" class="json-view empty">No response yet.</pre>
+            <div id="pendingActionPanel" class="pending-panel hidden">
+              <span id="pendingActionText"></span>
+              <div class="actions compact">
+                <button id="confirmBtn" type="button">Confirm</button>
+                <button id="cancelBtn" type="button" class="secondary">Cancel</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="observability-grid">
+          <section class="data-panel">
+            <h2>Traces</h2>
+            <div id="tracesView" class="list-view empty">No traces.</div>
+          </section>
+          <section class="data-panel">
+            <h2>Tool Calls</h2>
+            <div id="toolCallsView" class="list-view empty">No tool calls.</div>
+          </section>
+          <section class="data-panel">
+            <h2>Policy Logs</h2>
+            <div id="policyLogsView" class="list-view empty">No policy logs.</div>
+          </section>
+          <section class="data-panel">
+            <h2>Failure Logs</h2>
+            <div id="failureLogsView" class="list-view empty">No failure logs.</div>
+          </section>
+          <section class="data-panel wide">
+            <h2>RAG Evidence</h2>
+            <div id="ragView" class="list-view empty">No RAG evidence.</div>
+          </section>
+          <section class="data-panel wide">
+            <h2>LLM Signals</h2>
+            <div id="llmView" class="list-view empty">No LLM signals.</div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

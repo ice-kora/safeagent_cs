@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.action_plan import ActionPlan
+from app.llm.contract import candidate_to_action_plan, parse_action_plan_candidate
 from app.llm.provider import BaseLLMProvider, LLMRequest
 from app.services.llm_output_guard import LLMOutputGuard
 from app.services.planner_service import RuleBasedActionPlanner
@@ -21,8 +22,10 @@ class LLMActionPlanner:
         default_factory=RuleBasedActionPlanner
     )
     output_guard: LLMOutputGuard | None = None
+    last_debug_info: dict[str, Any] = field(default_factory=dict, init=False)
 
     def plan(self, *, intent: str, message: str) -> ActionPlan:
+        self.last_debug_info = self._base_debug_info(intent)
         try:
             response = self.provider.complete(
                 LLMRequest(
@@ -41,9 +44,34 @@ class LLMActionPlanner:
                     },
                 )
             )
-            payload = self._safe_payload(response.text)
-            return self._build_action_plan(payload)
-        except Exception:
+            self.last_debug_info.update(
+                {
+                    "provider": response.provider_name,
+                    "model": response.model_name,
+                }
+            )
+            try:
+                candidate = parse_action_plan_candidate(response.text)
+                self.last_debug_info["contract_status"] = "VALID"
+                self.last_debug_info["parse_status"] = "VALID"
+                self.last_debug_info["candidate_action_plan"] = {
+                    "schema_version": candidate.schema_version,
+                    "intent": candidate.intent,
+                    "action": candidate.action,
+                    "target_type": candidate.target_type,
+                    "target_id": candidate.target_id,
+                    "tool_name": candidate.tool_name,
+                    "confidence": candidate.confidence,
+                    "tool_arg_keys": sorted(candidate.tool_args.keys()),
+                }
+                self._safe_payload(response.text)
+                return candidate_to_action_plan(candidate)
+            except Exception:
+                if self.output_guard is not None:
+                    raise
+                return self._legacy_action_plan(response.text)
+        except Exception as exc:
+            self._record_fallback(exc)
             return self._fallback(intent, message)
 
     @staticmethod
@@ -55,8 +83,24 @@ class LLMActionPlanner:
 
     def _safe_payload(self, text: str) -> dict[str, Any]:
         if self.output_guard is None:
+            self.last_debug_info.update(
+                {
+                    "guard_enabled": False,
+                    "guard_status": "SKIPPED",
+                    "fallback_required": False,
+                }
+            )
             return self._parse_json_object(text)
         result = self.output_guard.guard_action_plan_output(text)
+        self.last_debug_info.update(
+            {
+                "guard_enabled": True,
+                "guard_status": result.guard_status,
+                "guard_reason": result.blocked_reason,
+                "fallback_required": result.fallback_required,
+                "guard_confidence": result.confidence,
+            }
+        )
         if result.fallback_required or result.sanitized_payload is None:
             raise ValueError(result.blocked_reason or "LLM planner guard failed")
         return result.sanitized_payload
@@ -92,3 +136,50 @@ class LLMActionPlanner:
 
     def _fallback(self, intent: str, message: str) -> ActionPlan:
         return self.fallback_planner.plan(intent=intent, message=message)
+
+    def _legacy_action_plan(self, text: str) -> ActionPlan:
+        payload = self._safe_payload(text)
+        plan = self._build_action_plan(payload)
+        self.last_debug_info.update(
+            {
+                "contract_status": "LEGACY_JSON",
+                "parse_status": "LEGACY_JSON",
+                "candidate_action_plan": {
+                    "schema_version": None,
+                    "intent": plan.intent,
+                    "action": plan.action,
+                    "target_type": plan.target_type,
+                    "target_id": plan.target_id,
+                    "tool_name": plan.tool_name,
+                    "confidence": payload.get("confidence"),
+                    "tool_arg_keys": sorted(plan.tool_args.keys()),
+                },
+            }
+        )
+        return plan
+
+    def _base_debug_info(self, intent: str) -> dict[str, Any]:
+        return {
+            "llm_enabled": True,
+            "adapter": "LLMActionPlanner",
+            "task_type": "planner",
+            "input_intent": intent,
+            "provider": getattr(self.provider, "name", "unknown"),
+            "model": None,
+            "guard_enabled": self.output_guard is not None,
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
+
+    def _record_fallback(self, exc: Exception) -> None:
+        self.last_debug_info.update(
+            {
+                "contract_status": self.last_debug_info.get(
+                    "contract_status", "FAILED"
+                ),
+                "parse_status": self.last_debug_info.get("parse_status", "FAILED"),
+                "fallback_used": True,
+                "fallback_reason": exc.__class__.__name__,
+                "fallback_message": str(exc)[:160],
+            }
+        )

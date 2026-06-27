@@ -4,3 +4,10 @@ pytest
 httpx
 langgraph
 psycopg[binary]
+python-dotenv
+pymilvus
+FlagEmbedding
+pypdf
+lxml>=6.1.1
+python-docx
+openpyxl
