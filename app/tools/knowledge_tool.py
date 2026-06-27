@@ -1,8 +1,5 @@
 from app.core.tool_result import ToolError, ToolResult
-from app.rag.chunker import PolicyChunker
-from app.rag.document_store import PolicyDocumentStore
-from app.rag.reranker import rerank_chunks
-from app.rag.retriever import KeywordRetriever
+from app.rag.rag_service import RAGService
 from app.rag.safety import sanitize_rag_payload
 
 
@@ -13,10 +10,7 @@ def query_policy(query: str) -> ToolResult:
     不调用业务工具，也不生成真实业务动作；主链路仍必须经过 ToolGateway。
     """
     try:
-        documents = PolicyDocumentStore().list_documents()
-        chunks = PolicyChunker().split_documents(documents)
-        retrieved = KeywordRetriever(chunks).retrieve(query=query, top_k=5)
-        reranked = rerank_chunks(retrieved, top_k=3)
+        data = RAGService().query(query)
     except Exception:
         return ToolResult(
             success=False,
@@ -32,16 +26,8 @@ def query_policy(query: str) -> ToolResult:
             ),
         )
 
-    safe_query = sanitize_rag_payload(query)
-    if not reranked:
-        answer = "暂未找到相关政策，建议补充更明确的问题或转人工处理。"
-        data = {
-            "query": safe_query,
-            "answer": answer,
-            "citations": [],
-            "sources": [],
-            "matched_chunks": [],
-        }
+    if data.get("no_answer"):
+        answer = data.get("answer") or "未找到足够可靠的知识依据，建议转人工客服。"
         return ToolResult(
             success=False,
             tool_name="knowledge_tool.query_policy",
@@ -56,19 +42,7 @@ def query_policy(query: str) -> ToolResult:
             ),
         )
 
-    answer = _build_answer(reranked)
-    citations = [item.citation_dict() for item in reranked]
-    matched_chunks = [item.matched_chunk_dict() for item in reranked]
-    data = sanitize_rag_payload(
-        {
-            "query": safe_query,
-            "answer": answer,
-            "citations": citations,
-            # sources 保留旧字段，兼容已有 Demo 和测试。
-            "sources": [citation["source_id"] for citation in citations],
-            "matched_chunks": matched_chunks,
-        }
-    )
+    answer = data.get("answer") or "已查询政策知识库。"
     return ToolResult(
         success=True,
         tool_name="knowledge_tool.query_policy",
@@ -76,16 +50,3 @@ def query_policy(query: str) -> ToolResult:
         summary=sanitize_rag_payload(answer),
         safe_for_llm=True,
     )
-
-
-def _build_answer(scored_chunks) -> str:
-    """基于命中切片生成规则摘要，不调用 LLM。"""
-    top_chunk = scored_chunks[0].chunk
-    supporting_titles = []
-    for item in scored_chunks:
-        if item.chunk.title not in supporting_titles:
-            supporting_titles.append(item.chunk.title)
-    evidence = top_chunk.text
-    if len(evidence) > 180:
-        evidence = evidence[:180].rstrip() + "..."
-    return f"根据《{top_chunk.title}》：{evidence} 参考来源：{'、'.join(supporting_titles)}。"

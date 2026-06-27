@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,11 @@ class PolicyChunk:
     title: str
     chunk_id: str
     text: str
+    source: str | None = None
+    source_path: str | None = None
+    file_type: str = "policy_corpus"
+    category: str = "policy"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -41,4 +47,3 @@ class ScoredChunk:
             "text": self.chunk.text,
             "score": round(self.score, 4),
         }
-
