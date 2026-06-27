@@ -68,7 +68,11 @@ class PostgresBackend:
                         id, role, tenant_id, status, created_at, updated_at
                     )
                     VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (id) DO NOTHING
+                    ON CONFLICT (id) DO UPDATE SET
+                        role = EXCLUDED.role,
+                        tenant_id = EXCLUDED.tenant_id,
+                        status = EXCLUDED.status,
+                        updated_at = CURRENT_TIMESTAMP
                     """,
                     [
                         (
@@ -90,7 +94,13 @@ class PostgresBackend:
                         %s, %s, %s, %s, %s, %s,
                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                     )
-                    ON CONFLICT (id) DO NOTHING
+                    ON CONFLICT (id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        tenant_id = EXCLUDED.tenant_id,
+                        status = EXCLUDED.status,
+                        delivery_status = EXCLUDED.delivery_status,
+                        refund_status = EXCLUDED.refund_status,
+                        updated_at = CURRENT_TIMESTAMP
                     """,
                     [
                         (

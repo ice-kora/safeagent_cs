@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.logging_service import LoggingService
-from app.storage.db import get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class PendingActionEventService:
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else None
-        init_db(self.db_path)
+        self.runtime_store = get_runtime_store(db_path=self.db_path)
 
     def record_event(
         self,
@@ -81,48 +81,31 @@ class PendingActionEventService:
             metadata=safe_metadata,
             created_at=created_at,
         )
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO pending_action_events (
-                    event_id, pending_action_id, run_id, parent_run_id,
-                    session_id, user_id, tenant_id, event_type,
-                    old_status, new_status, reason, metadata_json, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.event_id,
-                    event.pending_action_id,
-                    event.run_id,
-                    event.parent_run_id,
-                    event.session_id,
-                    event.user_id,
-                    event.tenant_id,
-                    event.event_type,
-                    event.old_status,
-                    event.new_status,
-                    event.reason,
-                    json.dumps(event.metadata, ensure_ascii=False, default=str),
-                    event.created_at,
+        self.runtime_store.insert_pending_action_event(
+            {
+                "event_id": event.event_id,
+                "pending_action_id": event.pending_action_id,
+                "run_id": event.run_id,
+                "parent_run_id": event.parent_run_id,
+                "session_id": event.session_id,
+                "user_id": event.user_id,
+                "tenant_id": event.tenant_id,
+                "event_type": event.event_type,
+                "old_status": event.old_status,
+                "new_status": event.new_status,
+                "reason": event.reason,
+                "metadata_json": json.dumps(
+                    event.metadata,
+                    ensure_ascii=False,
+                    default=str,
                 ),
-            )
-            connection.commit()
+                "created_at": event.created_at,
+            }
+        )
         return event
 
     def list_events(self, pending_action_id: str) -> list[PendingActionEvent]:
-        with get_connection(self.db_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT event_id, pending_action_id, run_id, parent_run_id,
-                       session_id, user_id, tenant_id, event_type,
-                       old_status, new_status, reason, metadata_json, created_at
-                FROM pending_action_events
-                WHERE pending_action_id = ?
-                ORDER BY created_at ASC, rowid ASC
-                """,
-                (pending_action_id,),
-            ).fetchall()
+        rows = self.runtime_store.list_pending_action_events(pending_action_id)
         return [self._row_to_event(row) for row in rows]
 
     @staticmethod

@@ -6,7 +6,7 @@ from typing import Any
 from app.core.action_plan import ActionPlan
 from app.core.ids import generate_pending_action_id
 from app.services.pending_action_event_service import PendingActionEventService
-from app.storage.db import get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 
 
 class PendingActionError(ValueError):
@@ -33,7 +33,7 @@ class PendingActionService:
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else None
-        init_db(self.db_path)
+        self.runtime_store = get_runtime_store(db_path=self.db_path)
         self.event_service = PendingActionEventService(db_path=self.db_path)
 
     def create_pending_action(
@@ -59,30 +59,20 @@ class PendingActionService:
             default=str,
         )
 
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO pending_actions (
-                    pending_action_id, session_id, source_run_id, user_id,
-                    action_plan_json, risk_level, status, expires_at,
-                    created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pending_action_id,
-                    session_id,
-                    source_run_id,
-                    user_id,
-                    action_plan_json,
-                    risk_level,
-                    self.STATUS_PENDING,
-                    expires_at.isoformat(),
-                    now.isoformat(),
-                    now.isoformat(),
-                ),
-            )
-            connection.commit()
+        self.runtime_store.create_pending_action(
+            {
+                "pending_action_id": pending_action_id,
+                "session_id": session_id,
+                "source_run_id": source_run_id,
+                "user_id": user_id,
+                "action_plan_json": action_plan_json,
+                "risk_level": risk_level,
+                "status": self.STATUS_PENDING,
+                "expires_at": expires_at.isoformat(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+        )
         self.event_service.record_event(
             pending_action_id=pending_action_id,
             run_id=source_run_id,
@@ -103,18 +93,7 @@ class PendingActionService:
 
     def get_pending_action(self, pending_action_id: str) -> dict[str, Any] | None:
         """按 ID 读取待确认动作原始记录。"""
-        with get_connection(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT pending_action_id, session_id, source_run_id, user_id,
-                       action_plan_json, risk_level, status, expires_at,
-                       created_at, updated_at
-                FROM pending_actions
-                WHERE pending_action_id = ?
-                """,
-                (pending_action_id,),
-            ).fetchone()
-        return dict(row) if row else None
+        return self.runtime_store.get_pending_action(pending_action_id)
 
     def validate_pending_action(
         self,
@@ -247,27 +226,15 @@ class PendingActionService:
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        with get_connection(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT status, session_id, user_id, source_run_id
-                FROM pending_actions
-                WHERE pending_action_id = ?
-                """,
-                (pending_action_id,),
-            ).fetchone()
-            if not row:
-                raise PendingActionError(f"pending_action 不存在: {pending_action_id}")
-            cursor = connection.execute(
-                """
-                UPDATE pending_actions
-                SET status = ?, updated_at = ?
-                WHERE pending_action_id = ?
-                """,
-                (status, self._now().isoformat(), pending_action_id),
-            )
-            connection.commit()
-        if cursor.rowcount == 0:
+        row = self.runtime_store.get_pending_action_status_context(pending_action_id)
+        if not row:
+            raise PendingActionError(f"pending_action 不存在: {pending_action_id}")
+        updated_rows = self.runtime_store.update_pending_action_status(
+            pending_action_id=pending_action_id,
+            status=status,
+            updated_at=self._now().isoformat(),
+        )
+        if updated_rows == 0:
             raise PendingActionError(f"pending_action 不存在: {pending_action_id}")
         old_status = row["status"]
         self.event_service.record_event(

@@ -7,7 +7,7 @@ from app.core.failure_result import (
     FailureNextAction,
 )
 from app.core.tool_result import ToolResult
-from app.storage.db import get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 
 
 class FailureHandler:
@@ -22,7 +22,7 @@ class FailureHandler:
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else None
-        init_db(self.db_path)
+        self.runtime_store = get_runtime_store(db_path=self.db_path)
 
     def handle_tool_result(
         self,
@@ -165,28 +165,19 @@ class FailureHandler:
         fallback_action: str,
         final_status: str,
     ) -> None:
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO failure_logs (
-                    id, run_id, session_id, failure_type, source,
-                    retryable, retry_count, fallback_action, final_status
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    self._generate_log_id(),
-                    run_id,
-                    session_id,
-                    failure_type,
-                    source,
-                    1 if retryable else 0,
-                    retry_count,
-                    fallback_action,
-                    final_status,
-                ),
-            )
-            connection.commit()
+        self.runtime_store.insert_failure_log(
+            {
+                "id": self._generate_log_id(),
+                "run_id": run_id,
+                "session_id": session_id,
+                "failure_type": failure_type,
+                "source": source,
+                "retryable": 1 if retryable else 0,
+                "retry_count": retry_count,
+                "fallback_action": fallback_action,
+                "final_status": final_status,
+            }
+        )
 
     @staticmethod
     def _generate_log_id() -> str:

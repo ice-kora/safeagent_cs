@@ -4,7 +4,7 @@ from typing import Any
 from app.core.ids import generate_ticket_id
 from app.core.tool_result import ToolResult
 from app.services.logging_service import LoggingService
-from app.storage.db import get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 
 
 OPEN_TICKET_STATUSES = {"OPEN", "PROCESSING"}
@@ -40,57 +40,37 @@ def create_ticket(
     if invalid_result:
         return invalid_result
 
-    init_db(db_path)
+    runtime_store = get_runtime_store(db_path=db_path)
     idempotency_key = _build_idempotency_key(user_id, action, target_type, target_id)
     safe_description = _sanitize_description(description)
 
-    with get_connection(db_path) as connection:
-        existing_ticket = connection.execute(
-            """
-            SELECT id, status, type, risk_level, idempotency_key
-            FROM tickets
-            WHERE idempotency_key = ?
-              AND status IN ('OPEN', 'PROCESSING')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (idempotency_key,),
-        ).fetchone()
-
-        if existing_ticket:
-            data = _ticket_row_to_data(existing_ticket, created=False)
-            summary = f"已存在未关闭工单 {data['ticket_id']}，本次不重复创建。"
-            return ToolResult(
-                success=True,
-                tool_name="ticket_tool.create_ticket",
-                data=data,
-                summary=summary,
-                safe_for_llm=True,
-            )
-
-        ticket_id = generate_ticket_id()
-        connection.execute(
-            """
-            INSERT INTO tickets (
-                id, user_id, type, status, risk_level, idempotency_key,
-                source_run_id, parent_run_id, pending_action_id, description
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ticket_id,
-                user_id,
-                ticket_type,
-                "OPEN",
-                risk_level,
-                idempotency_key,
-                source_run_id,
-                parent_run_id,
-                pending_action_id,
-                safe_description,
-            ),
+    existing_ticket = runtime_store.get_open_ticket_by_idempotency_key(idempotency_key)
+    if existing_ticket:
+        data = _ticket_row_to_data(existing_ticket, created=False)
+        summary = f"已存在未关闭工单 {data['ticket_id']}，本次不重复创建。"
+        return ToolResult(
+            success=True,
+            tool_name="ticket_tool.create_ticket",
+            data=data,
+            summary=summary,
+            safe_for_llm=True,
         )
-        connection.commit()
+
+    ticket_id = generate_ticket_id()
+    runtime_store.insert_ticket(
+        {
+            "id": ticket_id,
+            "user_id": user_id,
+            "type": ticket_type,
+            "status": "OPEN",
+            "risk_level": risk_level,
+            "idempotency_key": idempotency_key,
+            "source_run_id": source_run_id,
+            "parent_run_id": parent_run_id,
+            "pending_action_id": pending_action_id,
+            "description": safe_description,
+        }
+    )
 
     summary = f"已创建人工处理工单 {ticket_id}。"
     return ToolResult(

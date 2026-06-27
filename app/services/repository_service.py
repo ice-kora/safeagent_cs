@@ -9,6 +9,7 @@ from app.storage.database_config import (
 )
 from app.storage.db import DEFAULT_DB_PATH, get_connection, init_db
 from app.storage.postgres import PostgresBackend
+from app.storage.runtime_store import get_runtime_store
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,7 @@ class RepositoryService:
     ) -> None:
         self.mock_dir = Path(mock_dir) if mock_dir else DEFAULT_MOCK_DIR
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        explicit_db_path = db_path is not None
         settings = get_database_settings()
         selected_backend = (db_backend or settings.backend).strip().lower()
         if selected_backend not in {DB_BACKEND_SQLITE, DB_BACKEND_POSTGRES}:
@@ -46,10 +48,12 @@ class RepositoryService:
         self.db_backend = selected_backend
         self.database_url = database_url or settings.database_url
         self.postgres_backend: PostgresBackend | None = None
+        self.runtime_store = get_runtime_store(
+            db_path=self.db_path if explicit_db_path else None
+        )
 
-        # v0.6-DB-R1: 始终初始化 runtime SQLite store（tickets 等运行时表），
-        # 即使 platform data（users / orders）走 PostgreSQL 也不能跳过。
-        init_db(self.db_path)
+        if self.db_backend == DB_BACKEND_SQLITE or explicit_db_path:
+            init_db(self.db_path)
 
         if self.db_backend == DB_BACKEND_POSTGRES:
             self.postgres_backend = PostgresBackend(self.database_url)
@@ -104,18 +108,7 @@ class RepositoryService:
         self, idempotency_key: str
     ) -> dict[str, Any] | None:
         """查询同一幂等键下未关闭工单，用于避免重复创建人工工单。"""
-        query = """
-            SELECT id, user_id, type, status, risk_level, idempotency_key,
-                   source_run_id, parent_run_id, pending_action_id
-            FROM tickets
-            WHERE idempotency_key = ?
-              AND status IN ('OPEN', 'PROCESSING')
-            ORDER BY created_at DESC
-            LIMIT 1
-        """
-        with get_connection(self.db_path) as connection:
-            row = connection.execute(query, (idempotency_key,)).fetchone()
-        return dict(row) if row else None
+        return self.runtime_store.get_open_ticket_by_idempotency_key(idempotency_key)
 
     def _get_user_context_from_db(self, user_id: str) -> dict[str, Any] | None:
         if self.db_backend == DB_BACKEND_POSTGRES:

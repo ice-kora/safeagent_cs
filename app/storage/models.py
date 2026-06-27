@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS policy_logs (
     id TEXT PRIMARY KEY,
     -- run_id：所属 Agent 执行链路
     run_id TEXT NOT NULL,
+    -- request_id：所属 HTTP 请求 ID，可为空以兼容历史数据
+    request_id TEXT,
     -- session_id：所属用户会话
     session_id TEXT NOT NULL,
     -- user_id：当前请求用户 ID
@@ -100,6 +102,8 @@ CREATE TABLE IF NOT EXISTS policy_logs (
     tenant_id TEXT,
     -- action：计划动作
     action TEXT,
+    -- tool_name：候选工具名，只记录工具标识，不记录参数
+    tool_name TEXT,
     -- target_type：目标资源类型
     target_type TEXT,
     -- target_id：目标资源 ID
@@ -110,6 +114,8 @@ CREATE TABLE IF NOT EXISTS policy_logs (
     risk_level TEXT NOT NULL,
     -- reason：面向审计的裁决原因，不记录敏感明文
     reason TEXT,
+    -- code：结构化裁决代码，当前默认等同 decision
+    code TEXT,
     -- created_at：记录创建时间
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -173,6 +179,86 @@ CREATE TABLE IF NOT EXISTS pending_action_events (
     -- metadata_json：事件元数据，必须脱敏且 JSON-safe
     metadata_json TEXT,
     -- created_at：记录创建时间
+    created_at TEXT NOT NULL
+);
+
+-- checkpoints：可恢复执行点表
+CREATE TABLE IF NOT EXISTS checkpoints (
+    -- checkpoint_id：恢复点 ID
+    checkpoint_id TEXT PRIMARY KEY,
+    -- run_id：产生该恢复点的 run
+    run_id TEXT NOT NULL,
+    -- parent_run_id：父级 run，可为空
+    parent_run_id TEXT,
+    -- session_id：所属会话
+    session_id TEXT NOT NULL,
+    -- user_id：所属用户
+    user_id TEXT NOT NULL,
+    -- current_node：挂起节点
+    current_node TEXT NOT NULL,
+    -- checkpoint_type：WAITING_CONFIRMATION / RESUMABLE 等
+    checkpoint_type TEXT NOT NULL,
+    -- state_snapshot_json：可恢复状态摘要，必须脱敏
+    state_snapshot_json TEXT NOT NULL,
+    -- resume_policy_json：恢复策略摘要
+    resume_policy_json TEXT NOT NULL,
+    -- status：CREATED / WAITING_CONFIRMATION / RESUMED / CANCELLED 等
+    status TEXT NOT NULL,
+    -- expires_at：过期时间
+    expires_at TEXT NOT NULL,
+    -- created_at：创建时间
+    created_at TEXT NOT NULL,
+    -- updated_at：最近更新时间
+    updated_at TEXT NOT NULL
+);
+
+-- checkpoint_events：恢复点时间线
+CREATE TABLE IF NOT EXISTS checkpoint_events (
+    -- event_id：事件 ID
+    event_id TEXT PRIMARY KEY,
+    -- checkpoint_id：恢复点 ID
+    checkpoint_id TEXT NOT NULL,
+    -- run_id：触发该事件的 run，可为空
+    run_id TEXT,
+    -- parent_run_id：父级 run，可为空
+    parent_run_id TEXT,
+    -- session_id：会话 ID
+    session_id TEXT,
+    -- user_id：用户 ID
+    user_id TEXT,
+    -- event_type：CREATED / RESUMED / CANCELLED / EXPIRED 等
+    event_type TEXT NOT NULL,
+    -- old_status：旧状态
+    old_status TEXT,
+    -- new_status：新状态
+    new_status TEXT,
+    -- reason：事件原因
+    reason TEXT,
+    -- metadata_json：事件元数据，必须脱敏
+    metadata_json TEXT,
+    -- created_at：创建时间
+    created_at TEXT NOT NULL
+);
+
+-- resume_attempts：恢复尝试审计表
+CREATE TABLE IF NOT EXISTS resume_attempts (
+    -- attempt_id：恢复尝试 ID
+    attempt_id TEXT PRIMARY KEY,
+    -- checkpoint_id：恢复点 ID
+    checkpoint_id TEXT NOT NULL,
+    -- run_id：恢复产生的 child run，可为空
+    run_id TEXT,
+    -- parent_run_id：原始 run
+    parent_run_id TEXT,
+    -- session_id：会话 ID
+    session_id TEXT NOT NULL,
+    -- user_id：用户 ID
+    user_id TEXT NOT NULL,
+    -- status：SUCCESS / FAILED
+    status TEXT NOT NULL,
+    -- reason：结果原因
+    reason TEXT,
+    -- created_at：创建时间
     created_at TEXT NOT NULL
 );
 
@@ -308,6 +394,18 @@ CREATE INDEX IF NOT EXISTS idx_pending_action_events_pending_action_id
 
 CREATE INDEX IF NOT EXISTS idx_pending_action_events_run_id
     ON pending_action_events(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_user_status
+    ON checkpoints(user_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session_status
+    ON checkpoints(session_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoint_events_checkpoint_id
+    ON checkpoint_events(checkpoint_id);
+
+CREATE INDEX IF NOT EXISTS idx_resume_attempts_checkpoint_id
+    ON resume_attempts(checkpoint_id);
 
 CREATE INDEX IF NOT EXISTS idx_tickets_user_status
     ON tickets(user_id, status);

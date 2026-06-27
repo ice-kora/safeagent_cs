@@ -3,8 +3,15 @@ __pycache__/
 *.py[cod]
 
 .env
+.env.local
+.env.*.local
+!.env.example
+!.env.demo.example
 .venv/
 venv/
 
 data/*.db
 logs/*.log
+.cache/
+milvus/
+volumes/

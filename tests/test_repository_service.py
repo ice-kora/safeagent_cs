@@ -5,7 +5,8 @@ import pytest
 from app.services.repository_service import RepositoryService
 
 
-def test_get_user_context_reads_minimal_user_fields(tmp_path: Path) -> None:
+def test_get_user_context_reads_minimal_user_fields(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SAFEAGENT_DB_BACKEND", "sqlite")
     repository = RepositoryService(db_path=tmp_path / "test.db")
 
     context = repository.get_user_context("u_1001")
@@ -75,7 +76,8 @@ def test_get_open_ticket_by_idempotency_key_returns_open_ticket(
     assert ticket["status"] == "OPEN"
 
 
-def test_missing_mock_file_reports_clear_error(tmp_path: Path) -> None:
+def test_missing_mock_file_reports_clear_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SAFEAGENT_DB_BACKEND", "sqlite")
     repository = RepositoryService(
         mock_dir=tmp_path / "missing_mock_dir",
         db_path=tmp_path / "test.db",

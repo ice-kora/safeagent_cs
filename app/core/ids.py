@@ -23,3 +23,15 @@ def generate_pending_action_id() -> str:
 
 def generate_ticket_id() -> str:
     return _generate_id("tk")
+
+
+def generate_checkpoint_id() -> str:
+    return _generate_id("cp")
+
+
+def generate_checkpoint_event_id() -> str:
+    return _generate_id("cpe")
+
+
+def generate_resume_attempt_id() -> str:
+    return _generate_id("ra")

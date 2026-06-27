@@ -5,7 +5,7 @@ from typing import Any
 from app.core.constants import RunStatus, TraceStatus
 from app.core.ids import generate_run_id, generate_trace_node_id
 from app.services.logging_service import LoggingService
-from app.storage.db import DEFAULT_DB_PATH, get_connection, init_db
+from app.storage.runtime_store import get_runtime_store
 
 
 class TraceService:
@@ -20,9 +20,9 @@ class TraceService:
         db_path: str | Path | None = None,
         logging_service: LoggingService | None = None,
     ) -> None:
-        self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        self.db_path = Path(db_path) if db_path else None
         self.logging_service = logging_service or LoggingService()
-        init_db(self.db_path)
+        self.runtime_store = get_runtime_store(db_path=self.db_path)
 
     def start_run(
         self,
@@ -38,26 +38,17 @@ class TraceService:
         同一次 run 内的工具重试不会创建新的 run。
         """
         run_id = generate_run_id()
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO agent_runs (
-                    run_id, session_id, user_id, request_id,
-                    parent_run_id, pending_action_id, status
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    session_id,
-                    user_id,
-                    request_id,
-                    parent_run_id,
-                    pending_action_id,
-                    RunStatus.RUNNING.value,
-                ),
-            )
-            connection.commit()
+        self.runtime_store.insert_agent_run(
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "request_id": request_id,
+                "parent_run_id": parent_run_id,
+                "pending_action_id": pending_action_id,
+                "status": RunStatus.RUNNING.value,
+            }
+        )
         self.logging_service.info(
             "agent_run_started",
             {
@@ -108,28 +99,27 @@ class TraceService:
         trace_node_id = generate_trace_node_id()
         sanitized_input = LoggingService.sanitize_payload(input_json)
         sanitized_output = LoggingService.sanitize_payload(output_json)
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO agent_traces (
-                    trace_node_id, run_id, parent_run_id, session_id,
-                    node_name, input_json, output_json, status, error_type
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    trace_node_id,
-                    run_id,
-                    run["parent_run_id"],
-                    run["session_id"],
-                    node_name,
-                    json.dumps(sanitized_input, ensure_ascii=False, default=str),
-                    json.dumps(sanitized_output, ensure_ascii=False, default=str),
-                    status,
-                    error_type,
+        self.runtime_store.insert_agent_trace(
+            {
+                "trace_node_id": trace_node_id,
+                "run_id": run_id,
+                "parent_run_id": run["parent_run_id"],
+                "session_id": run["session_id"],
+                "node_name": node_name,
+                "input_json": json.dumps(
+                    sanitized_input,
+                    ensure_ascii=False,
+                    default=str,
                 ),
-            )
-            connection.commit()
+                "output_json": json.dumps(
+                    sanitized_output,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                "status": status,
+                "error_type": error_type,
+            }
+        )
         self.logging_service.info(
             "trace_node_appended",
             {
@@ -144,47 +134,18 @@ class TraceService:
 
     def get_traces(self, run_id: str) -> list[dict[str, Any]]:
         """按 run_id 读取完整节点链路。"""
-        with get_connection(self.db_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT trace_node_id, run_id, parent_run_id, session_id,
-                       node_name, input_json, output_json, status,
-                       error_type, created_at
-                FROM agent_traces
-                WHERE run_id = ?
-                ORDER BY created_at ASC, rowid ASC
-                """,
-                (run_id,),
-            ).fetchall()
+        rows = self.runtime_store.list_agent_traces(run_id)
         return [self._trace_row_to_dict(row) for row in rows]
 
     def _update_run_status(self, run_id: str, status: str) -> None:
         self._get_run(run_id)
-        with get_connection(self.db_path) as connection:
-            connection.execute(
-                """
-                UPDATE agent_runs
-                SET status = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE run_id = ?
-                """,
-                (status, run_id),
-            )
-            connection.commit()
+        self.runtime_store.update_agent_run_status(run_id, status)
 
     def _get_run(self, run_id: str) -> dict[str, Any]:
-        with get_connection(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT run_id, session_id, user_id, request_id,
-                       parent_run_id, pending_action_id, status
-                FROM agent_runs
-                WHERE run_id = ?
-                """,
-                (run_id,),
-            ).fetchone()
+        row = self.runtime_store.get_agent_run(run_id)
         if not row:
             raise ValueError(f"run_id 不存在，无法更新或写入 Trace: {run_id}")
-        return dict(row)
+        return row
 
     @staticmethod
     def _trace_row_to_dict(row: Any) -> dict[str, Any]:

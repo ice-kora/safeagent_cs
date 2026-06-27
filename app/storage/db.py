@@ -22,6 +22,7 @@ def init_db(db_path: str | Path | None = None) -> Path:
     with get_connection(path) as connection:
         connection.executescript(SCHEMA_SQL)
         _ensure_tool_call_log_columns(connection)
+        _ensure_policy_log_columns(connection)
         connection.commit()
     return path
 
@@ -54,3 +55,17 @@ def _ensure_tool_call_log_columns(connection: sqlite3.Connection) -> None:
             ON tool_call_logs(idempotency_key)
         """
     )
+
+
+def _ensure_policy_log_columns(connection: sqlite3.Connection) -> None:
+    """为已存在的 SQLite 数据库补齐 v0.8 policy audit 字段。"""
+    rows = connection.execute("PRAGMA table_info(policy_logs)").fetchall()
+    existing_columns = {row["name"] for row in rows}
+    migrations = {
+        "request_id": "ALTER TABLE policy_logs ADD COLUMN request_id TEXT",
+        "tool_name": "ALTER TABLE policy_logs ADD COLUMN tool_name TEXT",
+        "code": "ALTER TABLE policy_logs ADD COLUMN code TEXT",
+    }
+    for column, sql in migrations.items():
+        if column not in existing_columns:
+            connection.execute(sql)
